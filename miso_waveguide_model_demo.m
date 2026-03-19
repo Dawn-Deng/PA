@@ -17,38 +17,22 @@ clear; clc;
 %  =========================
 params = defaultParameters();
 
-% 用户位置（每一行为一个用户 [x_k, y_k, 0]）
-userXY = [
-    2.0,  8.0;
-    5.5, 11.5;
-    8.0, 16.0
-];
+% 用户位置由参数控制后随机生成，不再在主脚本中手动写死坐标
+% userXY 的每一行为一个用户 [x_k, y_k]
+userXY = generateRandomUsers(params);
 
 % X(:, n) = [y_{n,1}, ..., y_{n,M}]^T，表示第 n 条波导上 M 个 PA 的纵向坐标
-X = [
-    1.0,  1.5;
-    3.0,  4.5;
-    6.0,  8.0
-];
-
-% 每个 PA 的波束朝向（按 [M, N] 存储）
-% theta \in (pi/2, pi]：俯仰角；phi \in (-pi, pi]：方位角
-theta = deg2rad([
-    135, 140;
-    130, 135;
-    125, 130
-]);
-
-phi = deg2rad([
-     10, -15;
-      5, -10;
-      0,  -5
-]);
+% 这里根据参数自动生成，避免直接手填 PA 坐标
+X = generatePALayout(params);
 
 %% =========================
 %  2. 几何建模
 %  =========================
 [users, waveguideFeedPoints, paPositions] = buildGeometry(userXY, X, params);
+
+% 每个 PA 的波束朝向由几何关系自动生成：
+% 每个 PA 指向与其最近的用户，得到 [M, N] 维度的 theta 和 phi
+[theta, phi, steeringTargets] = generateBeamAngles(paPositions, users);
 
 disp('用户全局坐标 q_k = [x_k, y_k, 0]^T：');
 disp(users);
@@ -58,6 +42,9 @@ disp(waveguideFeedPoints);
 
 disp('第 1 条波导上所有 PA 的位置 p_{1,m}：');
 disp(squeeze(paPositions(:, :, 1)).');
+
+disp('每个 PA 的指向目标用户索引：');
+disp(steeringTargets);
 
 %% =========================
 %  3. 单条波导导波信道 g_n(x_n)
@@ -111,11 +98,17 @@ disp(localCoord.');
 
 function params = defaultParameters()
 %DEFAULTPARAMETERS 设置示例所需的系统参数
-    params.N = 2;                 % 波导数量
-    params.M = 3;                 % 每条波导的 PA 数量
-    params.K = 3;                 % 用户数量
+    params.N = 2;                 % 波导数量（可改）
+    params.M = 3;                 % 每条波导的 PA 数量（可改）
+    params.K = 3;                 % 用户数量（可改）
     params.Dx = 10;               % 波导在 x 方向覆盖宽度
     params.d = 4;                 % 波导部署高度
+    params.randomSeed = 20260319; % 随机种子，保证结果可复现
+
+    params.userRegionX = [0, params.Dx];
+    params.userRegionY = [6, 20];
+    params.paYOffsetRange = [1, 10];
+    params.paPlacementMode = 'uniform'; % 可选：'uniform' / 'random'
 
     params.lambda = 0.01;         % 载波波长（m）
     params.nEff = 1.6;            % 波导有效折射率 n_eff
@@ -126,6 +119,36 @@ function params = defaultParameters()
     params.a = 0.45;              % 模式尺寸参数 a
     params.b = 0.30;              % 模式尺寸参数 b
     params.v = 1.1;               % 经验修正系数 v
+end
+
+function userXY = generateRandomUsers(params)
+%GENERATERANDOMUSERS 根据用户数 K 和区域范围随机生成用户位置
+    rng(params.randomSeed);
+    x = params.userRegionX(1) + diff(params.userRegionX) * rand(params.K, 1);
+    y = params.userRegionY(1) + diff(params.userRegionY) * rand(params.K, 1);
+    userXY = [x, y];
+end
+
+function X = generatePALayout(params)
+%GENERATEPALAYOUT 根据参数自动生成每条波导上的 PA 纵向坐标
+% 输出 X 大小为 [M, N]，第 n 列对应第 n 条波导上的 y_{n,m}
+
+    yMin = params.paYOffsetRange(1);
+    yMax = params.paYOffsetRange(2);
+
+    switch lower(params.paPlacementMode)
+        case 'uniform'
+            baseLine = linspace(yMin, yMax, params.M).';
+            X = repmat(baseLine, 1, params.N);
+
+        case 'random'
+            rng(params.randomSeed + 1);
+            X = yMin + (yMax - yMin) * rand(params.M, params.N);
+            X = sort(X, 1, 'ascend');
+
+        otherwise
+            error('未知的 paPlacementMode: %s', params.paPlacementMode);
+    end
 end
 
 function [users, feedPoints, paPositions] = buildGeometry(userXY, X, params)
@@ -151,6 +174,44 @@ function [users, feedPoints, paPositions] = buildGeometry(userXY, X, params)
 
         for m = 1:params.M
             paPositions(:, m, n) = [xW; X(m, n); params.d];
+        end
+    end
+end
+
+function [theta, phi, targetUserIdx] = generateBeamAngles(paPositions, users)
+%GENERATEBEAMANGLES 根据几何关系自动生成每个 PA 的俯仰角和方位角
+% 策略：每个 PA 指向距离最近的用户
+%
+% 输出：
+%   theta, phi    : [M, N]
+%   targetUserIdx : [M, N]，记录每个 PA 指向的目标用户索引
+
+    [~, M, N] = size(paPositions);
+    K = size(users, 1);
+
+    theta = zeros(M, N);
+    phi = zeros(M, N);
+    targetUserIdx = zeros(M, N);
+
+    for n = 1:N
+        for m = 1:M
+            pnm = paPositions(:, m, n);
+            distances = zeros(K, 1);
+
+            for k = 1:K
+                distances(k) = norm(users(k, :).'- pnm);
+            end
+
+            [~, kStar] = min(distances);
+            targetUserIdx(m, n) = kStar;
+
+            direction = users(kStar, :).'- pnm;
+            direction = direction / norm(direction);
+
+            % 与当前旋转模型兼容的角度定义：
+            % u = [cos(phi)sin(theta), sin(phi)sin(theta), cos(theta)]^T
+            theta(m, n) = acos(direction(3));
+            phi(m, n) = atan2(direction(2), direction(1));
         end
     end
 end
