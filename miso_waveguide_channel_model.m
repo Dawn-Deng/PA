@@ -1,13 +1,13 @@
-function model = miso_waveguide_channel_model(config)
-%MISO_WAVEGUIDE_CHANNEL_MODEL 复用几何与复合信道建模，供信号模型主函数调用。
-% 输入：
-%   config.params   : 系统参数结构体；缺省时使用默认参数
-%   config.userXY   : [K,2] 用户平面坐标；缺省时随机生成
-%   config.X        : [M,N] PA 纵向位置；缺省时自动生成
-%   config.theta    : [M,N] PA 俯仰角；缺省时按最近用户自动生成
-%   config.phi      : [M,N] PA 方位角；缺省时按最近用户自动生成
+function channel = miso_waveguide_channel_model(config)
+%MISO_WAVEGUIDE_CHANNEL_MODEL 将原始 demo 中的信道建模部分封装为可复用子模块。
+% 输入 config 可包含：
+%   config.params : 系统参数结构体
+%   config.userXY : [K,2] 用户位置
+%   config.X      : [M,N] PA 纵向位置
+%   config.theta  : [M,N] PA 俯仰角
+%   config.phi    : [M,N] PA 方位角
 %
-% 输出 model 结构体包含：
+% 输出 channel 结构体包含：
 %   params, userXY, X, users, feedPoints, paPositions,
 %   theta, phi, steeringTargets, H, details
 
@@ -31,18 +31,18 @@ function model = miso_waveguide_channel_model(config)
 
     [H, details] = compositeChannel(users, X, theta, phi, params);
 
-    model = struct();
-    model.params = params;
-    model.userXY = userXY;
-    model.X = X;
-    model.users = users;
-    model.feedPoints = feedPoints;
-    model.paPositions = paPositions;
-    model.theta = theta;
-    model.phi = phi;
-    model.steeringTargets = steeringTargets;
-    model.H = H;
-    model.details = details;
+    channel = struct();
+    channel.params = params;
+    channel.userXY = userXY;
+    channel.X = X;
+    channel.users = users;
+    channel.feedPoints = feedPoints;
+    channel.paPositions = paPositions;
+    channel.theta = theta;
+    channel.phi = phi;
+    channel.steeringTargets = steeringTargets;
+    channel.H = H;
+    channel.details = details;
 end
 
 function value = getFieldOrDefault(s, fieldName, defaultValue)
@@ -54,7 +54,7 @@ function value = getFieldOrDefault(s, fieldName, defaultValue)
 end
 
 function params = defaultParameters()
-%DEFAULTPARAMETERS 设置示例所需的系统参数
+%DEFAULTPARAMETERS 设置原始 demo 所需的系统参数
     params.N = 4;
     params.M = 8;
     params.K = 10;
@@ -217,7 +217,7 @@ function [H, details] = compositeChannel(users, X, theta, phi, params)
 end
 
 function localCoord = globalToPALocal(userPos, paPos, theta, phi)
-%GLOBALTOPALOCAL 全局坐标系到 PA 局部坐标系旋转
+%GLOBALTOPALOCAL 实现全局坐标系到 PA 局部坐标系的旋转变换
     delta = userPos - paPos;
     Rx = rotationMatrixX(theta - pi / 2);
     Rz = rotationMatrixZ(pi / 2 - phi);
