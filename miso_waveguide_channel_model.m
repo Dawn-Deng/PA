@@ -1,81 +1,38 @@
-function channel = miso_waveguide_channel_model(config)
-%MISO_WAVEGUIDE_CHANNEL_MODEL 将原始 demo 中的信道建模部分封装为可复用子模块。
-% 输入 config 可包含：
-%   config.params : 系统参数结构体
-%   config.userXY : [K,2] 用户位置
-%   config.X      : [M,N] PA 纵向位置
-%   config.theta  : [M,N] PA 俯仰角
-%   config.phi    : [M,N] PA 方位角
-%
-% 输出 channel 结构体包含：
-%   params, userXY, X, users, feedPoints, paPositions,
-%   theta, phi, steeringTargets, H, details
+function channelState = miso_waveguide_channel_model(params)
+%MISO_WAVEGUIDE_CHANNEL_MODEL 多用户 MISO 波导-自由空间复合信道建模
+% 本函数对应论文中的信道部分：
+% 1) 用户位置、波导位置和 PA 位置建模；
+% 2) 波导内导波信道 g_n(x_n)；
+% 3) 自由空间信道 \tilde{h}_{k,n}(x_n)；
+% 4) 总复合信道 h_k(X)；
+% 5) 全局坐标系到 PA 局部坐标系的旋转变换。
 
-    if nargin < 1
-        config = struct();
-    end
+    validateattributes(params, {'struct'}, {'nonempty'});
 
-    params = getFieldOrDefault(config, 'params', defaultParameters());
-    userXY = getFieldOrDefault(config, 'userXY', generateRandomUsers(params));
-    X = getFieldOrDefault(config, 'X', generatePALayout(params));
+    userXY = generateRandomUsers(params);
+    X = generatePALayout(params);
+    [users, waveguideFeedPoints, paPositions] = buildGeometry(userXY, X, params);
+    [theta, phi, steeringTargets] = generateBeamAngles(paPositions, users);
 
-    [users, feedPoints, paPositions] = buildGeometry(userXY, X, params);
-
-    if isfield(config, 'theta') && isfield(config, 'phi')
-        theta = config.theta;
-        phi = config.phi;
-        steeringTargets = [];
-    else
-        [theta, phi, steeringTargets] = generateBeamAngles(paPositions, users);
-    end
-
+    guidedWaveExample = guidedWaveChannel(X(:, 1), params);
+    [freeSpaceExample, localCoordsExample] = freeSpaceChannelForWaveguide( ...
+        users(1, :).', squeeze(paPositions(:, :, 1)), theta(:, 1), phi(:, 1), params);
     [H, details] = compositeChannel(users, X, theta, phi, params);
 
-    channel = struct();
-    channel.params = params;
-    channel.userXY = userXY;
-    channel.X = X;
-    channel.users = users;
-    channel.feedPoints = feedPoints;
-    channel.paPositions = paPositions;
-    channel.theta = theta;
-    channel.phi = phi;
-    channel.steeringTargets = steeringTargets;
-    channel.H = H;
-    channel.details = details;
-end
-
-function value = getFieldOrDefault(s, fieldName, defaultValue)
-    if isfield(s, fieldName)
-        value = s.(fieldName);
-    else
-        value = defaultValue;
-    end
-end
-
-function params = defaultParameters()
-%DEFAULTPARAMETERS 设置原始 demo 所需的系统参数
-    params.N = 4;
-    params.M = 8;
-    params.K = 10;
-    params.Dx = 10;
-    params.d = 4;
-    params.randomSeed = 20260319;
-
-    params.userRegionX = [0, params.Dx];
-    params.userRegionY = [6, 20];
-    params.paYOffsetRange = [1, 10];
-    params.paPlacementMode = 'uniform';
-
-    params.lambda = 0.01;
-    params.nEff = 1.6;
-    params.alphaW = 0.08;
-
-    params.alphaL = 0.5;
-    params.nMedium = 1.0;
-    params.a = 0.45;
-    params.b = 0.30;
-    params.v = 1.1;
+    channelState = struct();
+    channelState.userXY = userXY;
+    channelState.X = X;
+    channelState.users = users;
+    channelState.waveguideFeedPoints = waveguideFeedPoints;
+    channelState.paPositions = paPositions;
+    channelState.theta = theta;
+    channelState.phi = phi;
+    channelState.steeringTargets = steeringTargets;
+    channelState.guidedWaveExample = guidedWaveExample;
+    channelState.freeSpaceExample = freeSpaceExample;
+    channelState.localCoordsExample = localCoordsExample;
+    channelState.H = H;
+    channelState.details = details;
 end
 
 function userXY = generateRandomUsers(params)
@@ -88,6 +45,8 @@ end
 
 function X = generatePALayout(params)
 %GENERATEPALAYOUT 根据参数自动生成每条波导上的 PA 纵向坐标
+% 输出 X 大小为 [M, N]，第 n 列对应第 n 条波导上的 y_{n,m}
+
     yMin = params.paYOffsetRange(1);
     yMax = params.paYOffsetRange(2);
 
@@ -95,10 +54,12 @@ function X = generatePALayout(params)
         case 'uniform'
             baseLine = linspace(yMin, yMax, params.M).';
             X = repmat(baseLine, 1, params.N);
+
         case 'random'
             rng(params.randomSeed + 1);
             X = yMin + (yMax - yMin) * rand(params.M, params.N);
             X = sort(X, 1, 'ascend');
+
         otherwise
             error('未知的 paPlacementMode: %s', params.paPlacementMode);
     end
@@ -106,6 +67,7 @@ end
 
 function [users, feedPoints, paPositions] = buildGeometry(userXY, X, params)
 %BUILDGEOMETRY 构造用户、波导馈电点和 PA 三维位置
+
     validateattributes(userXY, {'numeric'}, {'size', [params.K, 2]});
     validateattributes(X, {'numeric'}, {'size', [params.M, params.N]});
 
@@ -125,6 +87,8 @@ end
 
 function [theta, phi, targetUserIdx] = generateBeamAngles(paPositions, users)
 %GENERATEBEAMANGLES 根据几何关系自动生成每个 PA 的俯仰角和方位角
+% 策略：每个 PA 指向距离最近的用户
+
     [~, M, N] = size(paPositions);
     K = size(users, 1);
 
@@ -146,7 +110,6 @@ function [theta, phi, targetUserIdx] = generateBeamAngles(paPositions, users)
 
             direction = users(kStar, :).'- pnm;
             direction = direction / norm(direction);
-
             theta(m, n) = acos(direction(3));
             phi(m, n) = atan2(direction(2), direction(1));
         end
@@ -155,16 +118,17 @@ end
 
 function g = guidedWaveChannel(xn, params)
 %GUIDEDWAVECHANNEL 论文中的导波信道 g_n(x_n)
+
     lambdaG = params.lambda / params.nEff;
     xn = xn(:);
-
     amplitude = sqrt(1 / params.M) .* exp(-(params.alphaW / 2) .* xn);
     phase = exp(-1j * (2 * pi / lambdaG) .* xn);
     g = amplitude .* phase;
 end
 
 function [hFree, localCoords] = freeSpaceChannelForWaveguide(userPos, paPosWaveguide, thetaN, phiN, params)
-%FREESPACECHANNELFORWAVEGUIDE 计算用户 k 与第 n 条波导之间的自由空间信道
+%FREESPACECHANNELFORWAVEGUIDE 计算用户与单条波导之间的自由空间信道
+
     M = size(paPosWaveguide, 2);
     eta = params.lambda^2 / (4 * pi);
     hFree = zeros(M, 1);
@@ -181,6 +145,7 @@ end
 
 function [H, details] = compositeChannel(users, X, theta, phi, params)
 %COMPOSITECHANNEL 计算所有用户的总复合信道 h_k(X)
+
     [~, feedPoints, paPositions] = buildGeometry(users(:, 1:2), X, params); %#ok<ASGLU>
 
     K = size(users, 1);
@@ -203,8 +168,7 @@ function [H, details] = compositeChannel(users, X, theta, phi, params)
         for n = 1:params.N
             idx = (n - 1) * params.M + (1:params.M);
             [hFreeKN, localCoordsKN] = freeSpaceChannelForWaveguide( ...
-                users(k, :).', squeeze(paPositions(:, :, n)), ...
-                theta(:, n), phi(:, n), params);
+                users(k, :).', squeeze(paPositions(:, :, n)), theta(:, n), phi(:, n), params);
 
             hk(idx) = details.g{n} .* hFreeKN;
             details.hFree{k, n} = hFreeKN;
@@ -217,7 +181,8 @@ function [H, details] = compositeChannel(users, X, theta, phi, params)
 end
 
 function localCoord = globalToPALocal(userPos, paPos, theta, phi)
-%GLOBALTOPALOCAL 实现全局坐标系到 PA 局部坐标系的旋转变换
+%GLOBALTOPALOCAL 实现论文中的全局到 PA 局部坐标变换
+
     delta = userPos - paPos;
     Rx = rotationMatrixX(theta - pi / 2);
     Rz = rotationMatrixZ(pi / 2 - phi);
@@ -243,7 +208,7 @@ function R = rotationMatrixZ(phi)
 end
 
 function value = radiationPattern(localCoord, params)
-%RADIATIONPATTERN 计算 PA 局部坐标系下的高斯波束辐射模式
+%RADIATIONPATTERN 计算局部坐标下的辐射模式值
     x = localCoord(1);
     y = localCoord(2);
     z = localCoord(3);
@@ -264,11 +229,10 @@ function value = radiationPattern(localCoord, params)
     W2 = lambda * y / (pi * n * (v * b * lambda));
     R1 = y;
     R2 = y;
-
     Theta1 = atan(lambda * y / (pi * n * (v * a * lambda)));
     Theta2 = atan(lambda * y / (pi * n * (v * b * lambda)));
-
     B = sqrt(2 / (pi * (v * a * lambda) * (v * b * lambda)));
+
     amplitude = sqrt((v * a * lambda) * (v * b * lambda) / (W1 * W2)) * B;
     quadraticEnvelope = exp(-((x ^ 2) / (W1 ^ 2) + (z ^ 2) / (W2 ^ 2)));
     phase = exp(-1j * k * n * ((x ^ 2) / (2 * R1) + (z ^ 2) / (2 * R2) + y) ...

@@ -1,87 +1,151 @@
-function signal = miso_signal_model(H, signalConfig)
-%MISO_SIGNAL_MODEL 根据论文已给出的信号公式计算单时隙信号部分。
-% 输入：
-%   H                    : [NM, K] 复合信道矩阵，第 k 列为 h_k(X)
-%   signalConfig.N_RF    : RF 链路数
-%   signalConfig.scheduledUsers : 已调度用户集合 S^(t)，用户索引向量
-%   signalConfig.symbols : 与已调度用户对应的归一化符号向量
-%   signalConfig.W       : [NM, |S|] 数字波束赋形矩阵，第 i 列对应 w_k^(t)
-%   signalConfig.sigma2  : 噪声功率 sigma^2
-%   signalConfig.noise   : [|S|,1] 可选，若给定则直接使用
-%
-% 输出 signal 结构体包含：
-%   scheduledUsers, xRad, y, desired, interference, noise,
-%   effectiveChannels, sinr, rate
+function signalState = miso_signal_model(H, params)
+%MISO_SIGNAL_MODEL 根据信论文公式建模多用户发射、接收、SINR 与频谱效率
+% 1) 发射信号：x_rad^(t) = sum_k w_k^(t) s_k^(t)
+% 2) 接收信号：y_k^(t) = h_k^H w_k s_k + sum_{j!=k} h_k^H w_j s_j + n_k
+% 3) SINR 与频谱效率：gamma_k^(t), R_k^(t) = log2(1 + gamma_k^(t))
 
-    validateattributes(H, {'numeric'}, {'2d', 'nonempty'});
+    validateattributes(H, {'numeric'}, {'2d', 'nrows', params.N * params.M, 'ncols', params.K});
+    validateattributes(params, {'struct'}, {'nonempty'});
 
-    requiredFields = {'N_RF', 'scheduledUsers', 'symbols', 'W', 'sigma2'};
-    for idx = 1:numel(requiredFields)
-        fieldName = requiredFields{idx};
-        if ~isfield(signalConfig, fieldName)
-            error('signalConfig 缺少必要字段: %s', fieldName);
-        end
-    end
+    scheduledUsers = scheduleUsers(H, params);
+    scheduledChannels = H(:, scheduledUsers);
+    numStreams = numel(scheduledUsers);
 
-    scheduledUsers = signalConfig.scheduledUsers(:);
-    symbols = signalConfig.symbols(:);
-    W = signalConfig.W;
-    sigma2 = signalConfig.sigma2;
-    numScheduled = numel(scheduledUsers);
-    numUsers = size(H, 2);
-
-    validateattributes(scheduledUsers, {'numeric'}, {'integer', 'positive', '<=', numUsers});
-    validateattributes(symbols, {'numeric'}, {'column', 'numel', numScheduled});
-    validateattributes(W, {'numeric'}, {'size', [size(H, 1), numScheduled]});
-    validateattributes(sigma2, {'numeric'}, {'scalar', 'nonnegative'});
-
-    if numScheduled > signalConfig.N_RF
-        error('已调度用户数 |S^(t)|=%d 超过 N_RF=%d。', numScheduled, signalConfig.N_RF);
-    end
-
-    % 这里默认输入 symbols 已满足论文中的归一化条件 E[|s_k^(t)|^2]=1。
+    symbols = generateNormalizedSymbols(numStreams, params);
+    W = buildDigitalBeamformer(scheduledChannels, params);
     xRad = W * symbols;
+    noiseSamples = generateNoiseSamples(numStreams, params);
+    userMetrics = evaluateScheduledUsers(H, scheduledUsers, W, symbols, noiseSamples, params);
 
-    if isfield(signalConfig, 'noise')
-        noise = signalConfig.noise(:);
-        validateattributes(noise, {'numeric'}, {'column', 'numel', numScheduled});
-    else
-        noiseSigma = sqrt(sigma2 / 2);
-        noise = noiseSigma * (randn(numScheduled, 1) + 1j * randn(numScheduled, 1));
+    signalState = struct();
+    signalState.slotIndex = params.slotIndex;
+    signalState.scheduledUsers = scheduledUsers;
+    signalState.symbols = symbols;
+    signalState.W = W;
+    signalState.xRad = xRad;
+    signalState.noiseSamples = noiseSamples;
+    signalState.userMetrics = userMetrics;
+    signalState.userMetricsTable = buildUserMetricsTable(userMetrics);
+end
+
+function scheduledUsers = scheduleUsers(H, params)
+%SCHEDULEUSERS 生成每个传输时隙的调度用户集合 S^(t)
+
+    numScheduled = min(params.NRF, params.K);
+
+    switch lower(params.schedulingMode)
+        case 'strongest'
+            channelStrength = vecnorm(H, 2, 1);
+            [~, order] = sort(channelStrength, 'descend');
+            scheduledUsers = sort(order(1:numScheduled));
+
+        case 'first'
+            scheduledUsers = 1:numScheduled;
+
+        otherwise
+            error('未知的 schedulingMode: %s', params.schedulingMode);
     end
 
-    y = zeros(numScheduled, 1);
-    desired = zeros(numScheduled, 1);
-    interference = zeros(numScheduled, 1);
-    sinr = zeros(numScheduled, 1);
-    rate = zeros(numScheduled, 1);
-    effectiveChannels = zeros(numScheduled, numScheduled);
+    scheduledUsers = scheduledUsers(:);
+end
 
-    for idxUser = 1:numScheduled
-        userId = scheduledUsers(idxUser);
-        hk = H(:, userId);
-        effectiveRow = hk' * W;
-        effectiveChannels(idxUser, :) = effectiveRow;
+function symbols = generateNormalizedSymbols(numStreams, params)
+%GENERATENORMALIZEDSYMBOLS 生成满足 E[|s_k^(t)|^2] = 1 的归一化数据符号
 
-        desired(idxUser) = effectiveRow(idxUser) * symbols(idxUser);
-        interference(idxUser) = sum(effectiveRow .* symbols.') - desired(idxUser);
-        y(idxUser) = desired(idxUser) + interference(idxUser) + noise(idxUser);
+    rng(params.randomSeed + params.slotIndex);
+    rawSymbols = sign(randn(numStreams, 1)) + 1j * sign(randn(numStreams, 1));
+    symbols = rawSymbols / sqrt(2);
+end
 
-        desiredPower = abs(effectiveRow(idxUser)) ^ 2;
-        interferencePower = sum(abs(effectiveRow) .^ 2) - desiredPower;
-        sinr(idxUser) = desiredPower / (interferencePower + sigma2);
-        rate(idxUser) = log2(1 + sinr(idxUser));
+function W = buildDigitalBeamformer(HScheduled, params)
+%BUILDDIGITALBEAMFORMER 构造数字波束赋形向量 w_k^(t)
+
+    [numAntennas, numStreams] = size(HScheduled);
+    W = zeros(numAntennas, numStreams);
+
+    switch lower(params.precoderMode)
+        case 'mrt'
+            powerPerStream = params.totalTransmitPower / max(numStreams, 1);
+
+            for idx = 1:numStreams
+                hk = HScheduled(:, idx);
+                hkNorm = norm(hk);
+
+                if hkNorm > 0
+                    W(:, idx) = sqrt(powerPerStream) * hk / hkNorm;
+                end
+            end
+
+        otherwise
+            error('未知的 precoderMode: %s', params.precoderMode);
     end
+end
 
-    signal = struct();
-    signal.scheduledUsers = scheduledUsers;
-    signal.xRad = xRad;
-    signal.y = y;
-    signal.desired = desired;
-    signal.interference = interference;
-    signal.noise = noise;
-    signal.effectiveChannels = effectiveChannels;
-    signal.sinr = sinr;
-    signal.rate = rate;
-    signal.sumRate = sum(rate);
+function noiseSamples = generateNoiseSamples(numStreams, params)
+%GENERATENOISESAMPLES 生成加性白高斯噪声样本 n_k^(t)
+
+    rng(params.randomSeed + 10 * params.slotIndex);
+    noiseSamples = sqrt(params.sigma2 / 2) * ...
+        (randn(numStreams, 1) + 1j * randn(numStreams, 1));
+end
+
+function userMetrics = evaluateScheduledUsers(H, scheduledUsers, W, symbols, noiseSamples, params)
+%EVALUATESCHEDULEDUSERS 计算接收信号、SINR 与频谱效率
+
+    numStreams = numel(scheduledUsers);
+    userMetrics = repmat(struct( ...
+        'userIndex', 0, ...
+        'desiredSignal', 0, ...
+        'interference', 0, ...
+        'noiseSample', 0, ...
+        'receivedSignal', 0, ...
+        'sinr', 0, ...
+        'rate', 0), numStreams, 1);
+
+    for idx = 1:numStreams
+        userIndex = scheduledUsers(idx);
+        hk = H(:, userIndex);
+        desiredSignal = (hk' * W(:, idx)) * symbols(idx);
+
+        interference = 0;
+        interferencePower = 0;
+        for jdx = 1:numStreams
+            if jdx == idx
+                continue;
+            end
+
+            interference = interference + (hk' * W(:, jdx)) * symbols(jdx);
+            interferencePower = interferencePower + abs(hk' * W(:, jdx)) ^ 2;
+        end
+
+        receivedSignal = desiredSignal + interference + noiseSamples(idx);
+        desiredPower = abs(hk' * W(:, idx)) ^ 2;
+        sinr = desiredPower / (interferencePower + params.sigma2);
+        rate = log2(1 + sinr);
+
+        userMetrics(idx).userIndex = userIndex;
+        userMetrics(idx).desiredSignal = desiredSignal;
+        userMetrics(idx).interference = interference;
+        userMetrics(idx).noiseSample = noiseSamples(idx);
+        userMetrics(idx).receivedSignal = receivedSignal;
+        userMetrics(idx).sinr = sinr;
+        userMetrics(idx).rate = rate;
+    end
+end
+
+function metricsTable = buildUserMetricsTable(userMetrics)
+%BUILDUSERMETRICSTABLE 将结构体结果整理为便于查看的表格
+
+    userIndex = transpose([userMetrics.userIndex]);
+    desiredSignal = transpose([userMetrics.desiredSignal]);
+    interference = transpose([userMetrics.interference]);
+    noiseSample = transpose([userMetrics.noiseSample]);
+    receivedSignal = transpose([userMetrics.receivedSignal]);
+    sinr = transpose([userMetrics.sinr]);
+    rate = transpose([userMetrics.rate]);
+
+    metricsTable = table( ...
+        userIndex, desiredSignal, interference, noiseSample, receivedSignal, sinr, rate, ...
+        'VariableNames', {'userIndex', 'desiredSignal', 'interference', 'noiseSample', ...
+        'receivedSignal', 'sinr', 'rate'});
 end
