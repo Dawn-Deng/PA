@@ -98,9 +98,9 @@ disp(localCoord.');
 
 function params = defaultParameters()
 %DEFAULTPARAMETERS 设置示例所需的系统参数
-    params.N = 2;                 % 波导数量（可改）
-    params.M = 3;                 % 每条波导的 PA 数量（可改）
-    params.K = 3;                 % 用户数量（可改）
+    params.N = 4;                 % 波导数量（可改）
+    params.M = 8;                 % 每条波导的 PA 数量（可改）
+    params.K = 10;                 % 用户数量（可改）
     params.Dx = 10;               % 波导在 x 方向覆盖宽度
     params.d = 4;                 % 波导部署高度
     params.randomSeed = 20260319; % 随机种子，保证结果可复现
@@ -114,7 +114,7 @@ function params = defaultParameters()
     params.nEff = 1.6;            % 波导有效折射率 n_eff
     params.alphaW = 0.08;         % 波导衰减系数 alpha_W（Np/m）
 
-    params.alphaL = 0.96;         % LoS 存在系数/米
+    params.alphaL = 0.5;         % LoS 存在系数/米
     params.nMedium = 1.0;         % 自由空间/介质折射率 n
     params.a = 0.45;              % 模式尺寸参数 a
     params.b = 0.30;              % 模式尺寸参数 b
@@ -322,38 +322,51 @@ end
 
 function value = radiationPattern(localCoord, params)
 %RADIATIONPATTERN 计算 PA 局部坐标系下的高斯波束辐射模式 Upsilon(x,y,z)
-% 若用户位于 PA 后向半空间（即 y~ <= 0），则认为该方向不辐射，返回 0。
 
+   % 提取局部坐标
     x = localCoord(1);
     y = localCoord(2);
     z = localCoord(3);
 
+    % 如果用户位于 PA 后向半空间（即 y~ <= 0），则返回 0
     if y <= 0
         value = 0;
         return;
     end
 
-    lambda = params.lambda;
-    n = params.nMedium;
-    k = 2 * pi / lambda;
+    % 从参数中获取相关值
+    lambda = params.lambda;    % 波长
+    n = params.nMedium;        % 介质折射率
+    k = 2 * pi / lambda;       % 波数
+    v = params.v;              % 经验修正因子
+    a = params.a;              % 模式尺寸参数 a
+    b = params.b;              % 模式尺寸参数 b
 
-    w1 = params.v * params.a * lambda;
-    w2 = params.v * params.b * lambda;
+    % 计算光束半径 W1 和 W2
+    W1 = lambda * y / (pi * n * (v * a * lambda));
+    W2 = lambda * y / (pi * n * (v * b * lambda));
 
-    W1 = lambda * y / (pi * n * w1);
-    W2 = lambda * y / (pi * n * w2);
+    % 波前曲率半径 R1 和 R2
     R1 = y;
     R2 = y;
-    Theta1 = atan(lambda * y / (pi * n * w1));
-    Theta2 = atan(lambda * y / (pi * n * w2));
 
-    % 归一化常数 B：满足 \int |Upsilon|^2 dx dz = 1
-    B = sqrt(2 / (pi * w1 * w2));
+    % 计算 Gouy 相位 Theta1 和 Theta2
+    Theta1 = atan(lambda * y / (pi * n * (v * a * lambda)));
+    Theta2 = atan(lambda * y / (pi * n * (v * b * lambda)));
 
-    amplitude = sqrt((w1 * w2) / (W1 * W2)) * B;
+    % 归一化常数 B
+    B = sqrt(2 / (pi * (v * a * lambda) * (v * b * lambda)));
+
+    % 幅度因子
+    amplitude = sqrt((v * a * lambda) * (v * b * lambda) / (W1 * W2)) * B;
+
+    % 高斯衰减项
     quadraticEnvelope = exp(-((x ^ 2) / (W1 ^ 2) + (z ^ 2) / (W2 ^ 2)));
+
+    % 相位项
     phase = exp(-1j * k * n * ((x ^ 2) / (2 * R1) + (z ^ 2) / (2 * R2) + y) ...
         + 1j * (Theta1 + Theta2) / 2);
 
+    % 最终辐射模式值
     value = amplitude * quadraticEnvelope * phase;
 end
