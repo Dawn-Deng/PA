@@ -29,7 +29,11 @@ function scheduledUsers = selectScheduledUsers(params)
     switch lower(params.schedulingMode)
         case 'initialization'
             if ~isempty(params.initialServiceSet)
-                scheduledUsers = params.initialServiceSet(:).';
+                scheduledUsers = unique(params.initialServiceSet(:).', 'stable');
+                if numel(scheduledUsers) < KServ
+                    fallbackUsers = setdiff(candidatePool, scheduledUsers, 'stable');
+                    scheduledUsers = [scheduledUsers, fallbackUsers(1:KServ - numel(scheduledUsers))];
+                end
             else
                 scheduledUsers = candidatePool(1:KServ);
             end

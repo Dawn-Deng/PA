@@ -98,7 +98,7 @@ function candidatePool = selectCandidateUserPool(Emax, KServ)
 %SELECTCANDIDATEUSERPOOL 选取前 2K_serv 个用户作为候选集合 C
     [~, order] = sort(Emax, 'descend');
     numCandidates = min(numel(Emax), 2 * KServ);
-    candidatePool = sort(order(1:numCandidates)).';
+    candidatePool = order(1:numCandidates).';
 end
 
 function [utilityMatrix, movementCost] = buildUtilityMatrix(candidatePool, yRef, yStar, Gpot, params)
@@ -123,19 +123,49 @@ end
 
 function matchingResult = solvePrimaryAssociation(utilityMatrix, candidatePool, N, M, KServ)
 %SOLVEPRIMARYASSOCIATION 求解初始主关联的最大权匹配
-% 这里采用深度优先搜索穷举 K_serv 个不冲突的匹配对，适合当前示例规模。
+% 这里显式枚举“用户组合 + PA组合 + PA排列”，从而严格保证：
+% 1) 每个候选用户最多匹配一次；
+% 2) 每个 PA 最多匹配一次；
+% 3) 总共恰好选择 K_serv 个主关联对。
     numCandidates = numel(candidatePool);
     numPAs = N * M;
 
+    userComb = nchoosek(1:numCandidates, KServ);
+    paComb = nchoosek(1:numPAs, KServ);
+
     bestScore = -inf;
     bestPairs = zeros(KServ, 2);
-    usedUsers = false(numCandidates, 1);
-    usedPAs = false(numPAs, 1);
-    currentPairs = zeros(KServ, 2);
 
-    search(1, 0);
+    for uIdx = 1:size(userComb, 1)
+        chosenUsers = userComb(uIdx, :);
+        for pIdx = 1:size(paComb, 1)
+            chosenPAs = paComb(pIdx, :);
+            paPermutations = perms(chosenPAs);
 
-    serviceSet = sort(candidatePool(bestPairs(:, 1))).';
+            for permIdx = 1:size(paPermutations, 1)
+                paAssignment = paPermutations(permIdx, :);
+                currentScore = 0;
+                currentPairs = zeros(KServ, 2);
+
+                for pairIdx = 1:KServ
+                    candIdx = chosenUsers(pairIdx);
+                    paFlat = paAssignment(pairIdx);
+                    currentPairs(pairIdx, :) = [candIdx, paFlat];
+                    currentScore = currentScore + utilityMatrix(candIdx, paFlat);
+                end
+
+                if currentScore > bestScore
+                    bestScore = currentScore;
+                    bestPairs = currentPairs;
+                end
+            end
+        end
+    end
+
+    serviceSet = candidatePool(bestPairs(:, 1)).';
+    if numel(unique(serviceSet, 'stable')) ~= KServ
+        error('初始主关联求解失败：服务用户集合出现重复用户。');
+    end
     assignmentTensor = zeros(numCandidates, N, M);
     pairList = repmat(struct('userIndex', [], 'waveguideIndex', [], 'paIndex', [], 'utility', []), KServ, 1);
 
@@ -156,33 +186,6 @@ function matchingResult = solvePrimaryAssociation(utilityMatrix, candidatePool, 
     matchingResult.assignmentTensor = assignmentTensor;
     matchingResult.selectedPairs = pairList;
     matchingResult.serviceSet = serviceSet;
-
-    function search(depth, currentScore)
-        if depth > KServ
-            if currentScore > bestScore
-                bestScore = currentScore;
-                bestPairs = currentPairs;
-            end
-            return;
-        end
-
-        for candIdx = 1:numCandidates
-            if usedUsers(candIdx)
-                continue;
-            end
-            usedUsers(candIdx) = true;
-            for paFlat = 1:numPAs
-                if usedPAs(paFlat)
-                    continue;
-                end
-                usedPAs(paFlat) = true;
-                currentPairs(depth, :) = [candIdx, paFlat];
-                search(depth + 1, currentScore + utilityMatrix(candIdx, paFlat));
-                usedPAs(paFlat) = false;
-            end
-            usedUsers(candIdx) = false;
-        end
-    end
 end
 
 function [Xbar0, X0] = buildInitialPositionMatrix(matchingResult, yRef, yStar, params)
