@@ -23,14 +23,16 @@ end
 
 function scheduledUsers = selectScheduledUsers(params)
 %SELECTSCHEDULEDUSERS 生成时隙 t 的调度用户集合 S^(t)
-    numScheduled = min(params.NRF, params.K);
+    candidatePool = params.candidateUserPool(:).';
+    KServ = min([params.NRF, params.Kmax, numel(candidatePool)]);
 
     switch lower(params.schedulingMode)
         case 'first'
-            scheduledUsers = 1:numScheduled;
+            scheduledUsers = candidatePool(1:KServ);
         case 'random'
             rng(params.randomSeed + 2);
-            scheduledUsers = sort(randperm(params.K, numScheduled));
+            perm = randperm(numel(candidatePool), KServ);
+            scheduledUsers = sort(candidatePool(perm));
         otherwise
             error('未知的 schedulingMode: %s', params.schedulingMode);
     end

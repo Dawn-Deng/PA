@@ -56,18 +56,23 @@ function params = defaultParameters()
     params.M = 3;                 % 每条波导的 PA 数量（可改）
     params.K = 3;                 % 用户数量（可改）
     params.NRF = 2;               % 基站 RF 链数量，支持至多 N_RF 条数据流
+    params.Kmax = 3;              % 复杂度控制参数 K_max
     params.Dx = 10;               % 波导在 x 方向覆盖宽度
+    params.Dy = 10;               % 波导在 y 方向可部署长度 D_y
+    params.deltaMin = 1.0;        % 相邻 PA 的最小间距约束 Delta
     params.d = 4;                 % 波导部署高度
     params.randomSeed = 20260319; % 随机种子，保证结果可复现
     params.symbolSeed = 20260320; % 符号随机种子
 
     params.userRegionX = [0, params.Dx];
     params.userRegionY = [6, 20];
-    params.paYOffsetRange = [1, 10];
+    params.paYOffsetRange = [0, params.Dy];
+    params.candidateUserPool = 1:params.K; % 候选用户集合 C
     params.paPlacementMode = 'uniform'; % 可选：'uniform' / 'random'
     params.schedulingMode = 'first';    % 可选：'first' / 'random'
     params.beamformingMethod = 'MRT';   % 可选：'MRT' / 'ZF'
-    params.totalTransmitPower = 1;      % 总发射功率约束 sum_k ||w_k||^2 <= P
+    params.totalTransmitPower = 1;      % 总发射功率约束 sum_k ||w_k||^2 <= P_max
+    params.Pmax = params.totalTransmitPower; % 记号与优化问题中的 P_max 对应
     params.sigma2 = 1e-4;               % AWGN 噪声功率
 
     params.lambda = 0.01;         % 载波波长（m）

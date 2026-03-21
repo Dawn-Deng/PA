@@ -1,8 +1,9 @@
-%% 主入口：先进行信道建模，再进行信号建模
+%% 主入口：先进行信道建模，再进行信号建模，最后进行优化问题建模
 clear; clc;
 
 [channelState, params] = miso_channel_model();
 signalState = miso_signal_model(channelState, params);
+problemState = miso_problem_formulation(channelState, signalState, params);
 
 %% =========================
 %  1. 信道部分结果展示
@@ -66,3 +67,28 @@ disp(signalState.slotResult.rate);
 
 disp('每个调度用户的分解结果（期望信号 / 多用户干扰 / 噪声）：');
 disp(struct2table(signalState.slotResult.userMetrics));
+
+%% =========================
+%  3. 总优化问题建模结果展示
+%  =========================
+disp('===== 系统总优化问题建模结果 =====');
+disp('当前候选用户集合 C：');
+disp(problemState.variables.candidatePool);
+
+disp('当前服务用户集合 S：');
+disp(problemState.variables.S);
+
+disp('当前 PA 位置矩阵 X：');
+disp(problemState.variables.X);
+
+disp('当前俯仰角 theta：');
+disp(problemState.variables.theta);
+
+disp('当前方位角 phi：');
+disp(problemState.variables.phi);
+
+disp('当前总频谱效率 R_sum(S, X, W, theta, phi)：');
+disp(problemState.objective);
+
+disp('约束检查结果：');
+disp(problemState.constraints);
