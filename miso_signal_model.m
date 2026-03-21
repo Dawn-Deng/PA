@@ -27,6 +27,12 @@ function scheduledUsers = selectScheduledUsers(params)
     KServ = min([params.NRF, params.Kmax, numel(candidatePool)]);
 
     switch lower(params.schedulingMode)
+        case 'initialization'
+            if ~isempty(params.initialServiceSet)
+                scheduledUsers = params.initialServiceSet(:).';
+            else
+                scheduledUsers = candidatePool(1:KServ);
+            end
         case 'first'
             scheduledUsers = candidatePool(1:KServ);
         case 'random'

@@ -67,10 +67,12 @@ function params = defaultParameters()
     params.userRegionX = [0, params.Dx];
     params.userRegionY = [6, 20];
     params.paYOffsetRange = [0, params.Dy];
-    params.candidateUserPool = 1:params.K; % 候选用户集合 C
+    params.candidateUserPool = 1:params.K; % 候选用户集合 C（初始化后会更新）
+    params.initialServiceSet = [];      % 初始化后得到的初始服务集合 S^(0)
     params.paPlacementMode = 'uniform'; % 可选：'uniform' / 'random'
-    params.schedulingMode = 'first';    % 可选：'first' / 'random'
+    params.schedulingMode = 'initialization'; % 可选：'initialization' / 'first' / 'random'
     params.beamformingMethod = 'MRT';   % 可选：'MRT' / 'ZF'
+    params.lambdaMov = 0.05;           % 初始匹配中的移动代价权重 lambda_mov
     params.totalTransmitPower = 1;      % 总发射功率约束 sum_k ||w_k||^2 <= P_max
     params.Pmax = params.totalTransmitPower; % 记号与优化问题中的 P_max 对应
     params.sigma2 = 1e-4;               % AWGN 噪声功率
