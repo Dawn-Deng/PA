@@ -17,7 +17,10 @@ function [state, aoInfo] = runAO(state, params)
     sumRateHistory = zeros(params.Tmax + 1, 1);
     positionMemory = [];
 
-    [state, wInfo0] = updatePrecodingWMMSE(state, params);
+    wInfo0 = [];
+    state.sumRate = 0;
+    state.sinr = zeros(numel(state.S), 1);
+    state.rate = zeros(numel(state.S), 1);
     sumRateHistory(1) = state.sumRate;
 
     for t = 1:params.Tmax

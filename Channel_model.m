@@ -38,8 +38,6 @@ function [params, state, info] = initializeSystem()
     state.Emax = [];
     state.iteration = 0;
     state = updateState(state, params);
-    [state.theta, state.phi, state.steeringTargets] = nearestUserAngles(state, params);
-    state = updateState(state, params);
 
     info = struct();
     info.referencePositions = referencePositions(params);
@@ -124,25 +122,6 @@ function yRef = referencePositions(params)
     for m = 1:params.M
         yRef(m) = (m - 1) * params.deltaMin + (m - 1) / (params.M - 1) * ...
             (params.Dy - (params.M - 1) * params.deltaMin);
-    end
-end
-
-function [theta, phi, targetIdx] = nearestUserAngles(state, params)
-    theta = zeros(params.M, params.N);
-    phi = zeros(params.M, params.N);
-    targetIdx = zeros(params.M, params.N);
-
-    for n = 1:params.N
-        for m = 1:params.M
-            paPos = state.paPositions(:, m, n);
-            distances = vecnorm((state.users.' - paPos), 2, 1);
-            [~, kStar] = min(distances);
-            targetIdx(m, n) = kStar;
-            direction = state.users(kStar, :).'- paPos;
-            direction = direction / norm(direction);
-            theta(m, n) = acos(direction(3));
-            phi(m, n) = atan2(direction(2), direction(1));
-        end
     end
 end
 
