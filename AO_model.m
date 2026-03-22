@@ -4,6 +4,7 @@ function [state, aoInfo] = AO_model(state, params)
     blockHistory = repmat(struct('W', [], 'angle', [], 'position', [], 'userSet', []), params.Tmax, 1);
     sumRateHistory = zeros(params.Tmax + 1, 1);
     positionMemory = [];
+    angleMemory = [];
 
     state.sumRate = 0;
     state.sinr = zeros(numel(state.S), 1);
@@ -13,7 +14,7 @@ function [state, aoInfo] = AO_model(state, params)
     for t = 1:params.Tmax
         previousRate = state.sumRate;
         [state, blockHistory(t).W] = AO_W(state, params);
-        [state, blockHistory(t).angle] = updateAngles(state, params);
+        [state, blockHistory(t).angle, angleMemory] = AO_angle(state, params, angleMemory);
         [state, blockHistory(t).position, positionMemory] = updatePositions(state, params, positionMemory);
         [state, blockHistory(t).userSet] = updateUserSet(state, params, t);
         sumRateHistory(t + 1) = state.sumRate;
@@ -33,95 +34,6 @@ function aoInfo = finalizeAO(sumRateHistory, blockHistory, converged, iterations
     aoInfo.blockHistory = blockHistory;
     aoInfo.converged = converged;
     aoInfo.iterations = iterations;
-end
-
-function [state, info] = updateAngles(state, params)
-    directions = [1,0; -1,0; 0,1; 0,-1; 1,1; 1,-1; -1,1; -1,-1];
-    currentRate = state.sumRate;
-    acceptedCount = 0;
-
-    for n = 1:params.N
-        for m = 1:params.M
-            bestLocalState = state;
-            bestLocalRate = currentRate;
-            anchorAngles = buildAnchorSet(state, n, m);
-
-            for a = 1:size(anchorAngles, 1)
-                candidateState = state;
-                candidateState.theta(m, n) = anchorAngles(a, 1);
-                candidateState.phi(m, n) = anchorAngles(a, 2);
-                candidateState = Channel_model('update_state', candidateState, params);
-                candidateMetrics = Signal_model('evaluate', candidateState, params, state.W, state.S);
-                if candidateMetrics.sumRate >= bestLocalRate + params.epsilonTheta
-                    candidateState.sinr = candidateMetrics.sinr;
-                    candidateState.rate = candidateMetrics.rate;
-                    candidateState.sumRate = candidateMetrics.sumRate;
-                    bestLocalState = candidateState;
-                    bestLocalRate = candidateMetrics.sumRate;
-                end
-            end
-
-            state = bestLocalState;
-            currentRate = bestLocalRate;
-            localStepTheta = params.angleStepThetaInit;
-            localStepPhi = params.angleStepPhiInit;
-
-            while localStepTheta > params.angleStepThetaMin || localStepPhi > params.angleStepPhiMin
-                improved = false;
-                currentTheta = state.theta(m, n);
-                currentPhi = state.phi(m, n);
-                for d = 1:size(directions, 1)
-                    candTheta = currentTheta + directions(d, 1) * localStepTheta;
-                    candPhi = currentPhi + directions(d, 2) * localStepPhi;
-                    [candTheta, candPhi] = projectAngles(candTheta, candPhi);
-                    candidateState = state;
-                    candidateState.theta(m, n) = candTheta;
-                    candidateState.phi(m, n) = candPhi;
-                    candidateState = Channel_model('update_state', candidateState, params);
-                    candidateMetrics = Signal_model('evaluate', candidateState, params, state.W, state.S);
-                    if candidateMetrics.sumRate >= currentRate + params.epsilonTheta
-                        candidateState.sinr = candidateMetrics.sinr;
-                        candidateState.rate = candidateMetrics.rate;
-                        candidateState.sumRate = candidateMetrics.sumRate;
-                        state = candidateState;
-                        currentRate = candidateMetrics.sumRate;
-                        improved = true;
-                        acceptedCount = acceptedCount + 1;
-                        break;
-                    end
-                end
-                if ~improved
-                    localStepTheta = params.betaTheta * localStepTheta;
-                    localStepPhi = params.betaPhi * localStepPhi;
-                end
-            end
-        end
-    end
-
-    info = struct('acceptedCount', acceptedCount, 'sumRate', state.sumRate);
-end
-
-function anchors = buildAnchorSet(state, n, m)
-    anchors = [state.theta(m, n), state.phi(m, n); pi, 0];
-    paPos = state.paPositions(:, m, n);
-    for idx = 1:numel(state.S)
-        k = state.S(idx);
-        direction = state.users(k, :).'- paPos;
-        direction = direction / norm(direction);
-        anchors = [anchors; acos(direction(3)), atan2(direction(2), direction(1))]; %#ok<AGROW>
-    end
-    for i = 1:size(anchors, 1)
-        [anchors(i, 1), anchors(i, 2)] = projectAngles(anchors(i, 1), anchors(i, 2));
-    end
-    anchors = unique(round(anchors, 12), 'rows');
-end
-
-function [theta, phi] = projectAngles(theta, phi)
-    theta = min(max(theta, pi / 2), pi);
-    phi = mod(phi + pi, 2 * pi) - pi;
-    if phi <= -pi
-        phi = phi + 2 * pi;
-    end
 end
 
 function [state, info, memory] = updatePositions(state, params, memory)

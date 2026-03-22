@@ -16,6 +16,11 @@ function [state, initInfo] = Initialization(state, params)
     state.X = X0;
     state.theta = theta0;
     state.phi = phi0;
+    % Initialization only determines system/model quantities and the paper's
+    % initial variables S^(0), X^(0), theta^(0), phi^(0). No W optimization
+    % is performed here. We keep W as an empty placeholder, and the first
+    % effective precoder update is deferred to the AO-stage W-block
+    % AO_model -> AO_W -> updateW(...).
     state.W = [];
     state = Channel_model('update_state', state, params);
 
@@ -58,6 +63,12 @@ function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
             dOpt = norm([xk; yk; zk] - [xW; yOpt; params.d]);
             gainOpt = sqrt(1 / params.M) * exp(-(params.alphaW / 2) * yOpt) * ...
                 (params.alphaL ^ dOpt) * (params.lambda * params.nMedium * params.v * sqrt(2 * params.a * params.b) / (2 * dOpt));
+            % The closed-form quantities yOpt / dOpt / gainOpt primarily
+            % depend on the geometry between user k and waveguide n. Under
+            % the current initialization approximation, different PA indices
+            % m on the same waveguide share the same closed-form value.
+            % This is an intentional implementation simplification rather
+            % than a missing dimension in yStar / dStar / Gpot.
             for m = 1:params.M
                 idx = (n - 1) * params.M + m;
                 Gpot(k, idx) = abs(gainOpt);
