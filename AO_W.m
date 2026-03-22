@@ -19,7 +19,11 @@ function [state, info] = AO_W(state, params)
     numStreams = numel(scheduledUsers);
 
     if isempty(state.W) || size(state.W, 2) ~= numStreams
-        W = initializeW(H, params);
+        % Initialization stage does not optimize W. When AO enters the
+        % W-block for the first time, we only build a feasible non-optimized
+        % starting point; the first effective W update is the updateW(...)
+        % call inside the inner WMMSE loop below.
+        W = initializeWPlaceholder(size(H, 1), numStreams, params.Pmax);
     else
         W = state.W;
     end
@@ -72,12 +76,18 @@ function [state, info] = AO_W(state, params)
     info.scheduledUsers = scheduledUsers;
 end
 
-function W0 = initializeW(H, params)
-    A = H * H';
-    B = H;
-    W0 = solvePowerConstrained(A, B, params);
-    if real(trace(W0 * W0')) < eps
-        W0 = (1 / sqrt(size(H, 2))) * eye(size(H, 1), size(H, 2));
+function W0 = initializeWPlaceholder(numAnt, numStreams, Pmax)
+% Builds a feasible placeholder only. This is not interpreted as the first
+% optimized W-update in the paper; the first effective update happens in
+% the AO W-block through updateW(...) after u_k and v_k are formed.
+    W0 = zeros(numAnt, numStreams);
+    activeDiag = min(numAnt, numStreams);
+    if activeDiag > 0
+        W0(1:activeDiag, 1:activeDiag) = eye(activeDiag);
+        currentPower = real(trace(W0 * W0'));
+        if currentPower > 0
+            W0 = sqrt(Pmax / currentPower) * W0;
+        end
     end
 end
 
@@ -87,8 +97,10 @@ function u = updateReceivers(Hs, W, sigma2)
     numStreams = size(Hs, 1);
     u = zeros(numStreams, 1);
     for k = 1:numStreams
-        coupling = Hs(k, :) * W;
-        u(k) = coupling(k) / (sum(abs(coupling).^2) + sigma2);
+        hkH = Hs(k, :);          % hkH = h_k^H
+        coupling = hkH * W;      % entries are h_k^H w_j
+        desiredTerm = coupling(k); % desiredTerm = h_k^H w_k
+        u(k) = desiredTerm / (sum(abs(coupling).^2) + sigma2);
     end
 end
 
@@ -99,9 +111,11 @@ function e = computeMSE(Hs, W, u, sigma2)
     numStreams = size(Hs, 1);
     e = zeros(numStreams, 1);
     for k = 1:numStreams
-        coupling = Hs(k, :) * W;
+        hkH = Hs(k, :);          % hkH = h_k^H
+        coupling = hkH * W;      % entries are h_k^H w_j
+        desiredTerm = coupling(k); % desiredTerm = h_k^H w_k
         totalPower = sum(abs(coupling).^2) + sigma2;
-        e(k) = abs(u(k))^2 * totalPower - 2 * real(u(k) * coupling(k)) + 1;
+        e(k) = abs(u(k))^2 * totalPower - 2 * real(u(k) * desiredTerm) + 1;
     end
 end
 
@@ -161,8 +175,10 @@ function metrics = evaluateWBlockMetrics(Hs, W, sigma2, scheduledUsers)
     rate = zeros(numStreams, 1);
 
     for k = 1:numStreams
-        coupling = Hs(k, :) * W;
-        signalPower = abs(coupling(k))^2;
+        hkH = Hs(k, :);          % hkH = h_k^H
+        coupling = hkH * W;      % entries are h_k^H w_j
+        desiredTerm = coupling(k); % desiredTerm = h_k^H w_k
+        signalPower = abs(desiredTerm)^2;
         interferencePower = sum(abs(coupling).^2) - signalPower;
         sinr(k) = signalPower / (interferencePower + sigma2);
         rate(k) = log2(1 + sinr(k));
