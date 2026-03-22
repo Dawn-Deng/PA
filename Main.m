@@ -1,11 +1,12 @@
 %% Main.m
-% 五文件版本：Main / Channel_model / Initialization / Signal_model / Problem_formulation
+% 模块化版本：Main / Channel_model / Initialization / AO_model / AO_W / Signal_model / Problem_formulation
 
 clear; clc;
 
 [params, state, channelInfo] = Channel_model();
 [state, initInfo] = Initialization(state, params);
-[state, signalInfo, aoInfo] = Signal_model(state, params);
+[state, aoInfo] = AO_model(state, params);
+[state, signalInfo] = Signal_model(state, params);
 problemInfo = Problem_formulation(state, params, aoInfo);
 
 fprintf('===== Channel model =====\n');
@@ -43,10 +44,12 @@ disp(initInfo.theta0);
 disp('phi^(0):');
 disp(initInfo.phi0);
 
-fprintf('===== Signal model + AO =====\n');
+fprintf('===== AO =====\n');
 disp('AO sum-rate history:');
 disp(aoInfo.sumRateHistory);
 disp(['Converged = ', num2str(aoInfo.converged), ', iterations = ', num2str(aoInfo.iterations)]);
+
+fprintf('===== Signal model =====\n');
 disp('Current S^(t):');
 disp(signalInfo.S);
 disp('Current W^(t):');
