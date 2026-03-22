@@ -12,7 +12,7 @@ function [state, info] = AO_W(state, params)
     end
 
     sumRateHistory = zeros(params.IW + 1, 1);
-    metrics = Signal_model('evaluate', state, params, W, state.S);
+    metrics = evaluateWBlockMetrics(state, params, W, state.S);
     sumRateHistory(1) = metrics.sumRate;
     mseHistory = zeros(params.IW, numStreams);
     converged = false;
@@ -22,7 +22,7 @@ function [state, info] = AO_W(state, params)
         e = computeMSE(Hs, W, u, params.sigma2);
         v = 1 ./ max(real(e), eps);
         Wnew = updateW(H, u, v, params);
-        newMetrics = Signal_model('evaluate', state, params, Wnew, state.S);
+        newMetrics = evaluateWBlockMetrics(state, params, Wnew, state.S);
         mseHistory(iter, :) = real(e).';
         sumRateHistory(iter + 1) = newMetrics.sumRate;
         W = Wnew;
@@ -33,7 +33,7 @@ function [state, info] = AO_W(state, params)
         end
     end
 
-    finalMetrics = Signal_model('evaluate', state, params, W, state.S);
+    finalMetrics = evaluateWBlockMetrics(state, params, W, state.S);
     state.W = W;
     state.sinr = finalMetrics.sinr;
     state.rate = finalMetrics.rate;
@@ -120,4 +120,22 @@ end
 
 function W = computeW(A, B, mu)
     W = (A + mu * eye(size(A, 1))) \ B;
+end
+
+function metrics = evaluateWBlockMetrics(state, params, W, S)
+    Hs = state.channelMatrix(S, :);
+    numStreams = numel(S);
+    sinr = zeros(numStreams, 1);
+    rate = zeros(numStreams, 1);
+
+    for k = 1:numStreams
+        coupling = Hs(k, :) * W;
+        signalPower = abs(coupling(k))^2;
+        interferencePower = sum(abs(coupling).^2) - signalPower;
+        sinr(k) = signalPower / (interferencePower + params.sigma2);
+        rate(k) = log2(1 + sinr(k));
+    end
+
+    metrics = struct('sinr', sinr, 'rate', rate, 'sumRate', sum(rate), ...
+        'scheduledUsers', S(:).', 'W', W);
 end
