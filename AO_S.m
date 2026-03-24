@@ -387,3 +387,24 @@ function [invalid, powerVal] = isInvalidCandidateW(W, pmax)
     powerVal = real(trace(W * W'));
     invalid = any(~isfinite(W(:))) || ~isfinite(powerVal) || powerVal > pmax * (1 + 1e-6) || norm(W, 'fro') <= 1e-12;
 end
+
+function Wcandidate = buildCandidateW(state, params, candidateUsers)
+    HsCandidate = state.channelMatrix(candidateUsers, :);
+    numStreams = size(HsCandidate, 1);
+    numAnt = size(HsCandidate, 2);
+    Wcandidate = zeros(numAnt, numStreams);
+    tinyNorm = 1e-12;
+    for k = 1:numStreams
+        hk = HsCandidate(k, :).';
+        hkNorm = norm(hk);
+        if hkNorm > tinyNorm
+            Wcandidate(:, k) = conj(hk) / hkNorm;
+        else
+            Wcandidate(:, k) = zeros(numAnt, 1);
+        end
+    end
+    totalPower = real(trace(Wcandidate * Wcandidate'));
+    if isfinite(totalPower) && totalPower > 0
+        Wcandidate = sqrt(params.Pmax / totalPower) * Wcandidate;
+    end
+end
