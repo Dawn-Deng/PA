@@ -69,7 +69,7 @@ end
 function params = defaultParameters()
     params.N = 4;
     params.M = 8;
-    params.K = 32;
+    params.K = 64;
     params.NRF = 4;
     params.Kmax = 4;
     params.KServ = min(params.NRF, params.Kmax);

@@ -1,8 +1,5 @@
 function [state, info, memory] = AO_angle(state, params, memory)
-%AO_ANGLE Angle-block update in the alternating-optimization loop.
-% With (S^(t), X^(t), W^(t+1)) fixed, this function updates the PA angles
-% by a two-dimensional derivative-free pattern search together with a
-% re-anchoring mechanism, matching the paper's angle-subproblem modeling.
+%AO_ANGLE Angle-block update with detailed per-PA trace.
 
     if nargin < 3 || isempty(memory)
         memory = initializeAngleMemory(params);
@@ -23,18 +20,41 @@ function [state, info, memory] = AO_angle(state, params, memory)
         'rounds', 0, ...
         'finalTheta', [], ...
         'finalPhi', [], ...
-        'finalSumRate', []), params.M, params.N);
+        'finalSumRate', [], ...
+        'failureStreakBefore', [], ...
+        'failureStreakAfter', [], ...
+        'trace', []), params.M, params.N); % inner trace
 
     for n = 1:params.N
         for m = 1:params.M
             paAcceptedMoves = 0;
             paRounds = 0;
+            failureBefore = memory.failureStreak(m, n);
             shouldReanchor = userSetChanged || memory.failureStreak(m, n) >= reanchorFailureThreshold;
 
+            paTrace = struct();
+            paTrace.anchorSet = [];
+            paTrace.anchorRate = [];
+            paTrace.anchorSelected = [state.theta(m, n), state.phi(m, n)];
+            paTrace.anchorSelectedRate = state.sumRate;
+            paTrace.roundTrace = repmat(struct( ...
+                'roundIndex', [], ...
+                'stepThetaBefore', [], ...
+                'stepPhiBefore', [], ...
+                'candidateAngles', [], ...
+                'candidateRates', [], ...
+                'bestRoundRate', [], ...
+                'accepted', false, ...
+                'rejectReason', ''), 0, 1);
+
             if shouldReanchor
-                anchorSet = buildAnchorSet(state, params, m, n);
-                [state, ~] = selectBestAnchor(state, params, m, n, anchorSet);
+                [anchorSet, anchorRate] = evaluateAnchorSet(state, params, m, n, buildAnchorSet(state, params, m, n));
+                [state, bestAnchor] = selectBestAnchorFromEvaluation(state, params, m, n, anchorSet, anchorRate);
                 reanchorCount = reanchorCount + 1;
+                paTrace.anchorSet = anchorSet;
+                paTrace.anchorRate = anchorRate;
+                paTrace.anchorSelected = bestAnchor;
+                paTrace.anchorSelectedRate = state.sumRate;
             end
 
             centerTheta = state.theta(m, n);
@@ -45,8 +65,17 @@ function [state, info, memory] = AO_angle(state, params, memory)
 
             while paRounds < maxRounds && (stepTheta > params.angleStepThetaMin || stepPhi > params.angleStepPhiMin)
                 paRounds = paRounds + 1;
-                [bestRoundState, bestRoundRate, foundBetter] = ...
+
+                [bestRoundState, bestRoundRate, foundBetter, candidateAngles, candidateRates] = ...
                     evaluatePollingSet(state, params, m, n, centerTheta, centerPhi, stepTheta, stepPhi, directions);
+
+                thisRound = struct();
+                thisRound.roundIndex = paRounds;
+                thisRound.stepThetaBefore = stepTheta;
+                thisRound.stepPhiBefore = stepPhi;
+                thisRound.candidateAngles = candidateAngles;
+                thisRound.candidateRates = candidateRates;
+                thisRound.bestRoundRate = bestRoundRate;
 
                 if foundBetter && bestRoundRate >= centerRate + params.epsilonTheta
                     state = bestRoundState;
@@ -55,10 +84,19 @@ function [state, info, memory] = AO_angle(state, params, memory)
                     centerRate = state.sumRate;
                     paAcceptedMoves = paAcceptedMoves + 1;
                     acceptedCount = acceptedCount + 1;
+                    thisRound.accepted = true;
+                    thisRound.rejectReason = '';
                 else
+                    if ~foundBetter
+                        thisRound.rejectReason = 'noBetterCandidate'; % reject reason
+                    else
+                        thisRound.rejectReason = 'belowEpsilonTheta'; % reject reason
+                    end
                     stepTheta = params.betaTheta * stepTheta;
                     stepPhi = params.betaPhi * stepPhi;
                 end
+
+                paTrace.roundTrace(end + 1) = thisRound; %#ok<AGROW>
             end
 
             if paAcceptedMoves > 0
@@ -75,6 +113,9 @@ function [state, info, memory] = AO_angle(state, params, memory)
             perPA(m, n).finalTheta = state.theta(m, n);
             perPA(m, n).finalPhi = state.phi(m, n);
             perPA(m, n).finalSumRate = state.sumRate;
+            perPA(m, n).failureStreakBefore = failureBefore;
+            perPA(m, n).failureStreakAfter = memory.failureStreak(m, n);
+            perPA(m, n).trace = paTrace;
         end
     end
 
@@ -121,39 +162,41 @@ function threshold = getReanchorFailureThreshold(params)
     end
 end
 
-function [bestState, bestRate] = selectBestAnchor(state, params, m, n, anchorSet)
-% Re-anchoring: choose the best search center from the anchor set using the
-% true sum rate. The current angle pair is included in anchorSet, so the
-% selected anchor is non-decreasing relative to the current center.
-    bestState = state;
-    bestRate = state.sumRate;
+function [anchorSet, anchorRate] = evaluateAnchorSet(state, params, m, n, anchorSet)
+    anchorRate = -inf(size(anchorSet, 1), 1);
     for idx = 1:size(anchorSet, 1)
         candidateState = setSinglePAAngle(state, params, m, n, anchorSet(idx, 1), anchorSet(idx, 2));
         candidateMetrics = Signal_model('evaluate', candidateState, params, state.W, state.S);
-        if candidateMetrics.sumRate >= bestRate
-            candidateState.sinr = candidateMetrics.sinr;
-            candidateState.rate = candidateMetrics.rate;
-            candidateState.sumRate = candidateMetrics.sumRate;
-            bestState = candidateState;
-            bestRate = candidateMetrics.sumRate;
-        end
+        anchorRate(idx) = candidateMetrics.sumRate;
     end
 end
 
-function [bestState, bestRate, foundBetter] = evaluatePollingSet(state, params, m, n, centerTheta, centerPhi, stepTheta, stepPhi, directions)
-% Polling set:
-%   P_p^(t,r) = { Pi_Omega(center + direction .* step) : direction in D }.
+function [bestState, bestAnchor] = selectBestAnchorFromEvaluation(state, params, m, n, anchorSet, anchorRate)
+    [~, idx] = max(anchorRate);
+    bestAnchor = anchorSet(idx, :);
+    bestState = setSinglePAAngle(state, params, m, n, bestAnchor(1), bestAnchor(2));
+    metrics = Signal_model('evaluate', bestState, params, state.W, state.S);
+    bestState.sinr = metrics.sinr;
+    bestState.rate = metrics.rate;
+    bestState.sumRate = metrics.sumRate;
+end
+
+function [bestState, bestRate, foundBetter, candidateAngles, candidateRates] = evaluatePollingSet(state, params, m, n, centerTheta, centerPhi, stepTheta, stepPhi, directions)
     bestState = state;
     bestRate = state.sumRate;
     foundBetter = false;
+    candidateAngles = zeros(size(directions, 1), 2);
+    candidateRates = zeros(size(directions, 1), 1);
 
     for d = 1:size(directions, 1)
         candidateTheta = centerTheta + directions(d, 1) * stepTheta;
         candidatePhi = centerPhi + directions(d, 2) * stepPhi;
         [candidateTheta, candidatePhi] = projectAngles(candidateTheta, candidatePhi);
+        candidateAngles(d, :) = [candidateTheta, candidatePhi];
 
         candidateState = setSinglePAAngle(state, params, m, n, candidateTheta, candidatePhi);
         candidateMetrics = Signal_model('evaluate', candidateState, params, state.W, state.S);
+        candidateRates(d) = candidateMetrics.sumRate;
         if candidateMetrics.sumRate > bestRate
             candidateState.sinr = candidateMetrics.sinr;
             candidateState.rate = candidateMetrics.rate;
@@ -166,8 +209,6 @@ function [bestState, bestRate, foundBetter] = evaluatePollingSet(state, params, 
 end
 
 function anchorSet = buildAnchorSet(state, params, m, n)
-% Anchor set B_p^(t):
-%   { current angle, representative-user directions, (pi, 0) }.
     anchorSet = [state.theta(m, n), state.phi(m, n); pi, 0];
     paPos = state.paPositions(:, m, n);
     representativeUsers = selectRepresentativeUsers(state, paPos, params);
@@ -212,8 +253,6 @@ function candidateState = setSinglePAAngle(state, params, m, n, theta, phi)
 end
 
 function [theta, phi] = projectAngles(theta, phi)
-% Projection onto Omega:
-%   pi/2 <= theta <= pi,  -pi < phi <= pi.
     theta = min(max(theta, pi / 2), pi);
     phi = mod(phi + pi, 2 * pi) - pi;
     if phi <= -pi

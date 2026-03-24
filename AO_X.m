@@ -1,9 +1,5 @@
 function [state, info, memory] = AO_X(state, params, memory)
-%AO_X Position-block update in the alternating-optimization loop.
-% For each waveguide n, with the other variables fixed, this function
-% performs a waveguide-wise local descent using a numerical gradient,
-% an L-BFGS-B-style direction, projection onto the feasible waveguide set,
-% and a non-decreasing acceptance criterion based on the true sum rate.
+%AO_X Position-block update with detailed line-search trace.
 
     if nargin < 3 || isempty(memory)
         memory = initializePositionMemory(params);
@@ -13,10 +9,14 @@ function [state, info, memory] = AO_X(state, params, memory)
     waveguideInfo = repmat(struct( ...
         'waveguideIndex', [], ...
         'accepted', false, ...
+        'rejectReason', '', ... % reject reason
         'lineSearchSteps', 0, ...
         'alphaAccepted', [], ...
         'sumRateBefore', [], ...
-        'sumRateAfter', []), params.N, 1);
+        'sumRateAfter', [], ...
+        'gradCurrent', [], ...
+        'direction', [], ...
+        'lineSearchTrace', []), params.N, 1); % inner trace
 
     for n = 1:params.N
         xCurrent = state.X(:, n);
@@ -32,6 +32,9 @@ function [state, info, memory] = AO_X(state, params, memory)
         lineSearchSteps = 0;
         candidateStateBest = state;
         acceptedAlpha = [];
+        rejectReason = 'noImprovement';
+        lsTrace = repmat(struct('alphaTrial', [], 'xCandidate', [], 'candidateRate', [], ...
+            'accepted', false, 'rejectReason', ''), 0, 1);
 
         while alpha >= params.positionLineSearchMin
             lineSearchSteps = lineSearchSteps + 1;
@@ -43,17 +46,39 @@ function [state, info, memory] = AO_X(state, params, memory)
             candidateState = Channel_model('update_state', candidateState, params);
             candidateMetrics = Signal_model('evaluate', candidateState, params, state.W, state.S);
 
-            if candidateMetrics.sumRate >= fCurrent + params.epsilonX
+            thisAccepted = candidateMetrics.sumRate >= fCurrent + params.epsilonX;
+            thisRejectReason = '';
+            if ~thisAccepted
+                if norm(xCandidate - xCurrent) <= 1e-12
+                    thisRejectReason = 'projectionCollapsedMove'; % reject reason
+                else
+                    thisRejectReason = 'belowTolerance'; % reject reason
+                end
+            end
+
+            lsTrace(end + 1) = struct( ...
+                'alphaTrial', alpha, ...
+                'xCandidate', xCandidate, ...
+                'candidateRate', candidateMetrics.sumRate, ...
+                'accepted', thisAccepted, ...
+                'rejectReason', thisRejectReason); %#ok<AGROW>
+
+            if thisAccepted
                 candidateState.sinr = candidateMetrics.sinr;
                 candidateState.rate = candidateMetrics.rate;
                 candidateState.sumRate = candidateMetrics.sumRate;
                 candidateStateBest = candidateState;
                 accepted = true;
                 acceptedAlpha = alpha;
+                rejectReason = '';
                 break;
             end
 
             alpha = alpha * params.positionLineSearchBeta;
+        end
+
+        if ~accepted && alpha < params.positionLineSearchMin
+            rejectReason = 'stepTooSmall'; % reject reason
         end
 
         if accepted
@@ -66,10 +91,14 @@ function [state, info, memory] = AO_X(state, params, memory)
 
         waveguideInfo(n).waveguideIndex = n;
         waveguideInfo(n).accepted = accepted;
+        waveguideInfo(n).rejectReason = rejectReason;
         waveguideInfo(n).lineSearchSteps = lineSearchSteps;
         waveguideInfo(n).alphaAccepted = acceptedAlpha;
         waveguideInfo(n).sumRateBefore = fCurrent;
         waveguideInfo(n).sumRateAfter = state.sumRate;
+        waveguideInfo(n).gradCurrent = gradCurrent;
+        waveguideInfo(n).direction = direction;
+        waveguideInfo(n).lineSearchTrace = lsTrace;
     end
 
     info = struct( ...
@@ -87,8 +116,6 @@ function memory = initializePositionMemory(params)
 end
 
 function grad = numericalGradient(state, params, n, x)
-% Numerical differentiation for
-%   f_n(x_n) = R_sum(S^(t), X_-n^(t), x_n, W^(t+1), theta^(t+1), phi^(t+1)).
     grad = zeros(params.M, 1);
     delta = params.positionFiniteDiff;
 
@@ -112,7 +139,6 @@ function grad = numericalGradient(state, params, n, x)
 end
 
 function direction = lbfgsDirection(grad, memory)
-% L-BFGS-B-style inverse-Hessian direction on the current waveguide block.
     if isempty(memory.S)
         direction = grad;
         return;
