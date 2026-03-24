@@ -114,6 +114,8 @@ function printSummaryAndTrace(results, verbosity)
                 sDiag.triggered, sDiag.evaluatedPairs, sDiag.refinedPairs, sDiag.positiveCoarse, ...
                 sDiag.positiveFinal, sDiag.aboveEpsilonS, sDiag.bestDeltaCoarse, sDiag.bestDeltaFinal, ...
                 sDiag.bestMargin, sDiag.bestWeakUser, sDiag.bestStrongUser, sDiag.breakReason);
+            fprintf('  Sdet: weak=%s strong=%s pool=%s scores=%s\n', ...
+                sDiag.weakUserSetStr, sDiag.strongUserSetStr, sDiag.dynamicCandidatePoolHeadStr, sDiag.strongExternalScoresStr);
             xDiag = summarizeXBlock(bh);
             fprintf('  X: acc=%d ls=%d projCollapse=%d bestWG=%d bestCoarse=%.2e bestFinal=%.2e rejectMain=%s\n', ...
                 xDiag.acceptedCount, xDiag.totalLineSearchSteps, xDiag.projectionCollapsedCount, ...
@@ -155,6 +157,10 @@ function sDiag = summarizeSBlock(blockHistoryEntry, params)
         'bestMargin', NaN, ...
         'bestWeakUser', 'NaN', ...
         'bestStrongUser', 'NaN', ...
+        'weakUserSetStr', '[]', ...
+        'strongUserSetStr', '[]', ...
+        'dynamicCandidatePoolHeadStr', '[]', ...
+        'strongExternalScoresStr', '[]', ...
         'acceptedSwaps', 0, ...
         'breakReason', 'NA');
 
@@ -213,6 +219,26 @@ function sDiag = summarizeSBlock(blockHistoryEntry, params)
         sDiag.bestMargin = max(bestMargin(isfinite(bestMargin)));
     elseif isfinite(sDiag.bestDeltaFinal) && isfield(params, 'epsilonS')
         sDiag.bestMargin = sDiag.bestDeltaFinal - params.epsilonS;
+    end
+
+    idxDetail = numel(swapTrace);
+    if any(isfinite(bestDf))
+        [~, idxBestFinite] = max(bestDf(isfinite(bestDf)));
+        finiteIdx = find(isfinite(bestDf));
+        idxDetail = finiteIdx(idxBestFinite);
+    end
+    detailEntry = swapTrace(idxDetail);
+    if isfield(detailEntry, 'weakUserSet') && ~isempty(detailEntry.weakUserSet)
+        sDiag.weakUserSetStr = formatNumericVector(detailEntry.weakUserSet, '%d');
+    end
+    if isfield(detailEntry, 'strongUserSet') && ~isempty(detailEntry.strongUserSet)
+        sDiag.strongUserSetStr = formatNumericVector(detailEntry.strongUserSet, '%d');
+    end
+    if isfield(detailEntry, 'dynamicCandidatePoolHead') && ~isempty(detailEntry.dynamicCandidatePoolHead)
+        sDiag.dynamicCandidatePoolHeadStr = formatNumericVector(detailEntry.dynamicCandidatePoolHead, '%d');
+    end
+    if isfield(detailEntry, 'strongExternalScores') && ~isempty(detailEntry.strongExternalScores)
+        sDiag.strongExternalScoresStr = formatNumericVector(detailEntry.strongExternalScores, '%.2e');
     end
 end
 
@@ -289,6 +315,10 @@ function sTable = buildSTraceTable(results)
     bestMargin = nan(nIter, 1);
     acceptedSwaps = zeros(nIter, 1);
     breakReason = strings(nIter, 1);
+    weakUserSet = strings(nIter, 1);
+    strongUserSet = strings(nIter, 1);
+    dynamicCandidatePoolHead = strings(nIter, 1);
+    strongExternalScores = strings(nIter, 1);
     for t = 1:nIter
         bh = getBlockHistoryEntry(results.trace.blockHistory, t);
         sDiag = summarizeSBlock(bh, results.params);
@@ -303,10 +333,15 @@ function sTable = buildSTraceTable(results)
         bestMargin(t) = sDiag.bestMargin;
         acceptedSwaps(t) = sDiag.acceptedSwaps;
         breakReason(t) = string(sDiag.breakReason);
+        weakUserSet(t) = string(sDiag.weakUserSetStr);
+        strongUserSet(t) = string(sDiag.strongUserSetStr);
+        dynamicCandidatePoolHead(t) = string(sDiag.dynamicCandidatePoolHeadStr);
+        strongExternalScores(t) = string(sDiag.strongExternalScoresStr);
     end
     sTable = table(iter, triggered, evaluatedPairs, refinedPairs, positiveCoarse, ...
         positiveFinal, aboveEpsilonS, bestDeltaCoarse, bestDeltaFinal, bestMargin, ...
-        acceptedSwaps, breakReason);
+        acceptedSwaps, breakReason, weakUserSet, strongUserSet, ...
+        dynamicCandidatePoolHead, strongExternalScores);
 end
 
 function xTable = buildXTraceTable(results)
@@ -332,4 +367,17 @@ function xTable = buildXTraceTable(results)
     end
     xTable = table(iter, acceptedCount, totalLineSearchSteps, projectionCollapsedCount, ...
         bestWaveguide, bestCoarseImprove, bestFinalImprove, dominantRejectReason);
+end
+
+function out = formatNumericVector(vec, fmt)
+    if nargin < 2 || isempty(fmt)
+        fmt = '%g';
+    end
+    if isempty(vec)
+        out = '[]';
+        return;
+    end
+    vec = vec(:).';
+    parts = arrayfun(@(x) sprintf(fmt, x), vec, 'UniformOutput', false);
+    out = ['[', strjoin(parts, ' '), ']'];
 end
