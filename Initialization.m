@@ -38,7 +38,7 @@ function [state, initInfo] = Initialization(state, params)
     initInfo.X0 = X0;
     initInfo.theta0 = theta0;
     initInfo.phi0 = phi0;
-    initInfo.diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, X0, yRef); % 工程化增强：初始化诊断输出
+    initInfo.diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, Gpot, params.lambdaMov, X0, yRef); % 工程化增强：初始化诊断输出
 end
 
 function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
@@ -247,7 +247,7 @@ function assignment = hungarianAssignment(costMatrix)
 end
 
 
-function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, X0, yRef)
+function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, Gpot, lambdaMov, X0, yRef)
 % 工程化增强：用于批量实验统计与论文出图的数据摘要
     diagnostics = struct();
     diagnostics.candidatePoolSize = numel(candidatePool);
@@ -268,6 +268,17 @@ function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatr
     diagnostics.waveguideOffset = struct( ...
         'meanAbsPerWaveguide', mean(abs(offset), 1), ...
         'maxAbsPerWaveguide', max(abs(offset), [], 1));
+
+
+    % 工程化增强：轻量量纲检查（不改变优化逻辑）
+    diagnostics.scaleCheck = struct( ...
+        'gpotMax', max(Gpot(:)), ...
+        'gpotMean', mean(Gpot(:)), ...
+        'movementCostMean', mean(moveFlat), ...
+        'weightedMovementMean', lambdaMov * mean(moveFlat), ...
+        'utilityMin', min(utilityMatrix(:)), ...
+        'utilityMax', max(utilityMatrix(:)), ...
+        'utilityMean', mean(utilityMatrix(:)));
 end
 
 function val = percentileApprox(x, q)

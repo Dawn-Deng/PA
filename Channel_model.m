@@ -90,7 +90,7 @@ function params = defaultParameters()
 
     params.Pmax = 1;
     params.sigma2 = 1e-4;
-    params.lambdaMov = 0.05;
+    params.lambdaMov = 1e-4;
 
     params.userRegionX = [0, params.Dx];
     params.userRegionY = [6, 20];
