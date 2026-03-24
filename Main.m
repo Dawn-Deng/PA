@@ -1,70 +1,84 @@
 %% Main.m
-% 模块化版本：Main / Channel_model / Initialization / AO_model / AO_W / Signal_model / Problem_formulation
+% 工程化 demo 入口：单次运行 + 可导出 results
 
 clear; clc;
 
-[params, state, channelInfo] = Channel_model();
+% 工程化增强：可在此处覆写默认参数（留空即使用默认）
+paramsOverride = struct();
+% paramsOverride.verbosity = 2;
+% paramsOverride.saveResults = true;
+% paramsOverride.savePath = 'results_demo.mat';
+
+[params, state, channelInfo] = Channel_model(paramsOverride);
+validateParameters(params); % 工程化增强：统一参数校验
+sanityCheckState(state, params);
+
+initialSnapshot = struct('X', state.X, 'theta', state.theta, 'phi', state.phi, 'users', state.users, 'S', state.S);
+
 [state, initInfo] = Initialization(state, params);
+sanityCheckState(state, params);
+
+afterInitSnapshot = struct('X', state.X, 'theta', state.theta, 'phi', state.phi, 'S', state.S);
+
 [state, aoInfo] = AO_model(state, params);
+sanityCheckState(state, params);
+
 [state, signalInfo] = Signal_model(state, params);
 problemInfo = Problem_formulation(state, params, aoInfo);
 
-fprintf('===== Channel model =====\n');
-disp(channelInfo);
-disp('Users q_k:');
-disp(state.users);
-disp('Current X:');
-disp(state.X);
-disp('Current theta:');
-disp(state.theta);
-disp('Current phi:');
-disp(state.phi);
-disp('Current composite channel H:');
-disp(state.H);
+results = struct();
+results.params = params;
+results.channelInfo = channelInfo;
+results.initInfo = initInfo;
+results.aoInfo = aoInfo;
+results.signalInfo = signalInfo;
+results.problemInfo = problemInfo;
+results.runtimeStats = aoInfo.runtimeStats; % 结果导出/实验支持
+results.snapshots = struct( ...
+    'initial', initialSnapshot, ...
+    'afterInit', afterInitSnapshot, ...
+    'final', struct('X', state.X, 'theta', state.theta, 'phi', state.phi, 'S', state.S, 'sumRate', state.sumRate));
+results.plotData = struct( ...
+    'sumRateHistory', aoInfo.sumRateHistory, ...
+    'finalSINR', signalInfo.sinr, ...
+    'finalRate', signalInfo.rate, ...
+    'blockAccepted', struct( ...
+        'angle', [aoInfo.runtimeStats.iteration.angleAcceptedCount], ...
+        'x', [aoInfo.runtimeStats.iteration.XAcceptedCount], ...
+        's', [aoInfo.runtimeStats.iteration.SAcceptedSwaps]));
 
-fprintf('===== Initialization =====\n');
-disp('G_pot:');
-disp(initInfo.Gpot);
-disp('Emax:');
-disp(initInfo.Emax);
-disp('Candidate pool C:');
-disp(initInfo.candidatePool);
-disp('Reference y_ref:');
-disp(initInfo.referencePositions);
-disp('Utility matrix U:');
-disp(initInfo.utilityMatrix);
-disp('Hungarian selected pairs:');
-disp(struct2table(initInfo.matching.selectedPairs));
-disp('S^(0):');
-disp(initInfo.matching.serviceSet);
-disp('X^(0):');
-disp(initInfo.X0);
-disp('theta^(0):');
-disp(initInfo.theta0);
-disp('phi^(0):');
-disp(initInfo.phi0);
+if params.saveResults
+    save(params.savePath, 'results'); % 结果导出/实验支持
+end
 
-fprintf('===== AO =====\n');
-disp('AO sum-rate history:');
-disp(aoInfo.sumRateHistory);
-disp(['Converged = ', num2str(aoInfo.converged), ', iterations = ', num2str(aoInfo.iterations)]);
+printSummary(results, params.verbosity);
 
-fprintf('===== Signal model =====\n');
-disp('Current S^(t):');
-disp(signalInfo.S);
-disp('Current W^(t):');
-disp(signalInfo.W);
-disp('x_rad:');
-disp(signalInfo.xRad);
-disp('y:');
-disp(signalInfo.y);
-disp('SINR:');
-disp(signalInfo.sinr);
-disp('rate:');
-disp(signalInfo.rate);
-disp('sumRate:');
-disp(signalInfo.sumRate);
-disp(struct2table(signalInfo.userMetrics));
+function printSummary(results, verbosity)
+    if verbosity <= 0
+        fprintf('sumRate=%.6f, iterations=%d, converged=%d\n', ...
+            results.signalInfo.sumRate, results.aoInfo.iterations, results.aoInfo.converged);
+        return;
+    end
 
-fprintf('===== Problem formulation =====\n');
-disp(problemInfo);
+    fprintf('===== Summary =====\n');
+    fprintf('sumRate=%.6f, iterations=%d, converged=%d, reason=%s\n', ...
+        results.signalInfo.sumRate, results.aoInfo.iterations, results.aoInfo.converged, results.aoInfo.terminationReason);
+    fprintf('candidatePoolSize=%d, init utility mean=%.4g\n', ...
+        results.initInfo.diagnostics.candidatePoolSize, results.initInfo.diagnostics.utility.mean);
+    fprintf('runtime total=%.4fs (W=%.4f, angle=%.4f, X=%.4f, S=%.4f)\n', ...
+        results.runtimeStats.totalTime, results.runtimeStats.totalWTime, results.runtimeStats.totalAngleTime, ...
+        results.runtimeStats.totalXTime, results.runtimeStats.totalSTime);
+
+    if verbosity >= 2
+        disp('AO sum-rate history:');
+        disp(results.aoInfo.sumRateHistory(:).');
+        disp('Per-iteration block stats:');
+        disp(struct2table(results.runtimeStats.iteration));
+        disp('Final user metrics:');
+        if ~isempty(results.signalInfo.userMetrics)
+            disp(struct2table(results.signalInfo.userMetrics));
+        else
+            disp('No scheduled users / empty metrics.');
+        end
+    end
+end
