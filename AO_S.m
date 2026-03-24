@@ -6,6 +6,10 @@ function [state, info] = AO_S(state, params, t)
         'acceptedSwaps', 0, ...
         'bestDelta', 0, ...
         'swapTrace', [], ... % inner trace
+        'dynamicCandidatePool', [], ...
+        'dynamicCandidatePoolSize', 0, ...
+        'currentScoreType', 'channelNorm', ...
+        'strongExternalSource', 'dynamicCurrentState', ...
         'breakReason', 'notTriggered');
 
     if ~info.triggered
@@ -32,6 +36,9 @@ function [state, info] = AO_S(state, params, t)
         'acceptedUsingRefine', false, ...
         'acceptedSwapUserOut', [], ...
         'acceptedSwapUserIn', [], ...
+        'dynamicCandidatePoolHead', [], ...
+        'strongExternalScores', [], ...
+        'bestPairScore', NaN, ...
         'accepted', false, ...
         'sumRateBefore', [], ...
         'sumRateAfter', [], ...
@@ -40,11 +47,18 @@ function [state, info] = AO_S(state, params, t)
     for swapIter = 1:params.maxSwapPerUpdate
         sumRateBefore = state.sumRate;
         [weakUserPositions, weakUsers] = selectWeakUsers(state, params);
-        strongExternal = selectStrongExternalUsers(state, params);
+        [dynamicCandidatePool, currentScore, currentScoreType] = buildDynamicCandidatePool(state, params);
+        [strongExternal, strongExternalScores] = selectStrongExternalUsers(state, params, dynamicCandidatePool, currentScore);
+        info.dynamicCandidatePool = dynamicCandidatePool;
+        info.dynamicCandidatePoolSize = numel(dynamicCandidatePool);
+        info.currentScoreType = currentScoreType;
+        info.strongExternalSource = 'dynamicCurrentState';
 
         swapTrace(swapIter).swapIter = swapIter;
         swapTrace(swapIter).weakUserSet = weakUsers;
         swapTrace(swapIter).strongUserSet = strongExternal;
+        swapTrace(swapIter).dynamicCandidatePoolHead = dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)));
+        swapTrace(swapIter).strongExternalScores = strongExternalScores;
         swapTrace(swapIter).sumRateBefore = sumRateBefore;
 
         if isempty(weakUserPositions) || isempty(strongExternal)
@@ -57,13 +71,15 @@ function [state, info] = AO_S(state, params, t)
             swapTrace(swapIter).numCandidatesRefined = 0;
             swapTrace(swapIter).acceptedUsingRefine = false;
             swapTrace(swapIter).accepted = false;
+            swapTrace(swapIter).bestPairScore = NaN;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = 'noWeakOrStrongCandidates';
             info.breakReason = 'noWeakOrStrongCandidates';
             break;
         end
 
-        [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal);
+        [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluateRestrictedSwapNeighborhood( ...
+            state, params, weakUserPositions, weakUsers, strongExternal, currentScore);
         swapTrace(swapIter).evaluatedPairs = evaluatedPairs;
         swapTrace(swapIter).bestDelta = bestDelta;
         swapTrace(swapIter).epsilonS = params.epsilonS;
@@ -76,6 +92,7 @@ function [state, info] = AO_S(state, params, t)
         swapTrace(swapIter).numCandidatesWithPositiveFinalDelta = evalSummary.numCandidatesWithPositiveFinalDelta;
         swapTrace(swapIter).numCandidatesAboveEpsilonS = evalSummary.numCandidatesAboveEpsilonS;
         swapTrace(swapIter).bestCandidateEnteredRefine = evalSummary.bestCandidateEnteredRefine;
+        swapTrace(swapIter).bestPairScore = evalSummary.bestPairScore;
         swapTrace(swapIter).bestPair = bestPair;
         swapTrace(swapIter).acceptedUsingRefine = false;
 
@@ -118,18 +135,38 @@ function [weakUserPositions, weakUsers] = selectWeakUsers(state, params)
     weakUsers = state.S(weakUserPositions);
 end
 
-function strongExternal = selectStrongExternalUsers(state, params)
-    external = setdiff(state.candidatePool, state.S, 'stable');
+function [dynamicCandidatePool, currentScore, scoreType] = buildDynamicCandidatePool(state, params)
+    scoreType = 'channelNorm';
+    currentScore = zeros(params.K, 1);
+    if isfield(state, 'channelMatrix') && ~isempty(state.channelMatrix)
+        currentScore = vecnorm(state.channelMatrix, 2, 2);
+    end
+
+    externalAll = setdiff(1:params.K, state.S, 'stable');
+    maxExternal = numel(externalAll);
+    if maxExternal <= 0
+        dynamicCandidatePool = [];
+        return;
+    end
+    targetSize = min(max(2 * params.KServ, params.Lout + params.Lin), maxExternal);
+    [~, order] = sort(currentScore(externalAll), 'descend');
+    dynamicCandidatePool = externalAll(order(1:targetSize));
+end
+
+function [strongExternal, strongScores] = selectStrongExternalUsers(state, params, dynamicCandidatePool, currentScore)
+    external = setdiff(dynamicCandidatePool, state.S, 'stable');
     if isempty(external)
         strongExternal = [];
+        strongScores = [];
         return;
     end
 
-    [~, extOrder] = sort(state.Emax(external), 'descend');
+    [~, extOrder] = sort(currentScore(external), 'descend');
     strongExternal = external(extOrder(1:min(params.Lout, numel(external))));
+    strongScores = currentScore(strongExternal).';
 end
 
-function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal)
+function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal, currentScore)
     bestDelta = -inf;
     bestDeltaCoarse = -inf;
     bestState = state;
@@ -148,6 +185,8 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
         'finalSumRate', [], ...
         'rankByCoarseDelta', [], ...
         'enteredRefine', false, ...
+        'weakUserRate', [], ...
+        'strongUserCurrentScore', [], ...
         'initialSumRateEstimate', [], ...
         'improvementInsideRefine', [], ...
         'epsilonSMargin', [], ...
@@ -163,6 +202,8 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
         'strongUser', [], ...
         'position', [], ...
         'candidateSet', [], ...
+        'weakUserRate', NaN, ...
+        'strongUserCurrentScore', NaN, ...
         'Wcoarse', [], ...
         'coarseMetrics', [], ...
         'deltaCoarse', -inf, ...
@@ -206,6 +247,8 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
             pairData(pairIndex).strongUser = strongUser;
             pairData(pairIndex).position = pos;
             pairData(pairIndex).candidateSet = candidateUsers;
+            pairData(pairIndex).weakUserRate = state.rate(pos);
+            pairData(pairIndex).strongUserCurrentScore = currentScore(strongUser);
             pairData(pairIndex).Wcoarse = Wcandidate;
             pairData(pairIndex).coarseMetrics = coarseMetrics;
             pairData(pairIndex).deltaCoarse = deltaCoarse;
@@ -268,6 +311,8 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
         evaluatedPairs(i).finalSumRate = pairData(i).finalMetrics.sumRate;
         evaluatedPairs(i).rankByCoarseDelta = pairData(i).rankByCoarseDelta;
         evaluatedPairs(i).enteredRefine = pairData(i).enteredRefine;
+        evaluatedPairs(i).weakUserRate = pairData(i).weakUserRate;
+        evaluatedPairs(i).strongUserCurrentScore = pairData(i).strongUserCurrentScore;
         evaluatedPairs(i).initialSumRateEstimate = pairData(i).initialSumRateEstimate;
         evaluatedPairs(i).improvementInsideRefine = pairData(i).improvementInsideRefine;
         evaluatedPairs(i).epsilonSMargin = pairData(i).deltaFinal - params.epsilonS;
@@ -300,6 +345,11 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     evalSummary.numCandidatesWithPositiveFinalDelta = sum([pairData.deltaFinal] > 0);
     evalSummary.numCandidatesAboveEpsilonS = sum([pairData.deltaFinal] >= params.epsilonS);
     evalSummary.bestCandidateEnteredRefine = (bestPairIndex > 0) && pairData(bestPairIndex).enteredRefine;
+    if bestPairIndex > 0
+        evalSummary.bestPairScore = pairData(bestPairIndex).strongUserCurrentScore;
+    else
+        evalSummary.bestPairScore = NaN;
+    end
 end
 
 function Wcandidate = buildCandidateWCoarse(state, params, candidateUsers)
