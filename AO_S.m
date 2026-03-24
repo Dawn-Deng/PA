@@ -10,6 +10,10 @@ function [state, info] = AO_S(state, params, t)
         'dynamicCandidatePoolSize', 0, ...
         'currentScoreType', 'channelNorm', ...
         'strongExternalSource', 'dynamicCurrentState', ...
+        'currentScoreHead', [], ...
+        'baseScoreHead', [], ...
+        'weakAnchorUser', [], ...
+        'scoreTypeDetail', '', ...
         'breakReason', 'notTriggered');
 
     if ~info.triggered
@@ -38,6 +42,10 @@ function [state, info] = AO_S(state, params, t)
         'acceptedSwapUserIn', [], ...
         'dynamicCandidatePoolHead', [], ...
         'strongExternalScores', [], ...
+        'currentScoreHead', [], ...
+        'baseScoreHead', [], ...
+        'weakAnchorUser', [], ...
+        'scoreTypeDetail', '', ...
         'bestPairScore', NaN, ...
         'accepted', false, ...
         'sumRateBefore', [], ...
@@ -47,18 +55,28 @@ function [state, info] = AO_S(state, params, t)
     for swapIter = 1:params.maxSwapPerUpdate
         sumRateBefore = state.sumRate;
         [weakUserPositions, weakUsers] = selectWeakUsers(state, params);
-        [dynamicCandidatePool, currentScore, currentScoreType] = buildDynamicCandidatePool(state, params);
+        [dynamicCandidatePool, currentScore, currentScoreType, baseScore, weakAnchorUser, scoreTypeDetail] = ...
+            buildDynamicCandidatePool(state, params, weakUserPositions, weakUsers);
         [strongExternal, strongExternalScores] = selectStrongExternalUsers(state, params, dynamicCandidatePool, currentScore);
+        poolHead = dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)));
         info.dynamicCandidatePool = dynamicCandidatePool;
         info.dynamicCandidatePoolSize = numel(dynamicCandidatePool);
         info.currentScoreType = currentScoreType;
         info.strongExternalSource = 'dynamicCurrentState';
+        info.currentScoreHead = currentScore(poolHead).';
+        info.baseScoreHead = baseScore(poolHead).';
+        info.weakAnchorUser = weakAnchorUser;
+        info.scoreTypeDetail = scoreTypeDetail;
 
         swapTrace(swapIter).swapIter = swapIter;
         swapTrace(swapIter).weakUserSet = weakUsers;
         swapTrace(swapIter).strongUserSet = strongExternal;
-        swapTrace(swapIter).dynamicCandidatePoolHead = dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)));
+        swapTrace(swapIter).dynamicCandidatePoolHead = poolHead;
         swapTrace(swapIter).strongExternalScores = strongExternalScores;
+        swapTrace(swapIter).currentScoreHead = currentScore(poolHead).';
+        swapTrace(swapIter).baseScoreHead = baseScore(poolHead).';
+        swapTrace(swapIter).weakAnchorUser = weakAnchorUser;
+        swapTrace(swapIter).scoreTypeDetail = scoreTypeDetail;
         swapTrace(swapIter).sumRateBefore = sumRateBefore;
 
         if isempty(weakUserPositions) || isempty(strongExternal)
@@ -135,12 +153,24 @@ function [weakUserPositions, weakUsers] = selectWeakUsers(state, params)
     weakUsers = state.S(weakUserPositions);
 end
 
-function [dynamicCandidatePool, currentScore, scoreType] = buildDynamicCandidatePool(state, params)
-    scoreType = 'channelNorm';
-    currentScore = zeros(params.K, 1);
-    if isfield(state, 'channelMatrix') && ~isempty(state.channelMatrix)
-        currentScore = vecnorm(state.channelMatrix, 2, 2);
+function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUser, scoreTypeDetail] = ...
+    buildDynamicCandidatePool(state, params, weakUserPositions, weakUsers)
+    scoreType = 'weakSwapProxyDelta';
+    scoreTypeDetail = 'proxyDelta from weak anchor replacement';
+    weakAnchorUser = [];
+    weakAnchorPos = [];
+    if ~isempty(weakUsers)
+        weakAnchorUser = weakUsers(1);
     end
+    if ~isempty(weakUserPositions)
+        weakAnchorPos = weakUserPositions(1);
+    end
+
+    baseScore = zeros(params.K, 1);
+    if isfield(state, 'channelMatrix') && ~isempty(state.channelMatrix)
+        baseScore = vecnorm(state.channelMatrix, 2, 2);
+    end
+    currentScore = -inf(params.K, 1);
 
     externalAll = setdiff(1:params.K, state.S, 'stable');
     maxExternal = numel(externalAll);
@@ -148,7 +178,30 @@ function [dynamicCandidatePool, currentScore, scoreType] = buildDynamicCandidate
         dynamicCandidatePool = [];
         return;
     end
-    targetSize = min(max(2 * params.KServ, params.Lout + params.Lin), maxExternal);
+    targetSize = min(max(12, 4 * params.KServ), maxExternal);
+
+    if isempty(weakAnchorPos)
+        currentScore(externalAll) = baseScore(externalAll);
+        scoreType = 'channelNormFallback';
+        scoreTypeDetail = 'fallback to baseScore: missing weak anchor';
+    else
+        for idx = 1:numel(externalAll)
+            userK = externalAll(idx);
+            candidateUsers = state.S;
+            candidateUsers(weakAnchorPos) = userK;
+            Wcandidate = buildCandidateWCoarse(state, params, candidateUsers);
+            coarseMetrics = Signal_model('evaluate', state, params, Wcandidate, candidateUsers);
+            proxyDelta = coarseMetrics.sumRate - state.sumRate;
+            if isfinite(proxyDelta)
+                currentScore(userK) = proxyDelta;
+            elseif isfinite(baseScore(userK))
+                currentScore(userK) = baseScore(userK);
+            else
+                currentScore(userK) = -inf;
+            end
+        end
+    end
+
     [~, order] = sort(currentScore(externalAll), 'descend');
     dynamicCandidatePool = externalAll(order(1:targetSize));
 end
