@@ -38,6 +38,7 @@ function [state, initInfo] = Initialization(state, params)
     initInfo.X0 = X0;
     initInfo.theta0 = theta0;
     initInfo.phi0 = phi0;
+    initInfo.diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, X0, yRef); % 工程化增强：初始化诊断输出
 end
 
 function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
@@ -47,6 +48,7 @@ function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
     yStar = zeros(K, params.N, params.M);
     dStar = zeros(K, params.N, params.M);
     waveguideX = state.waveguideFeedPoints(:, 1);
+    yRef = Channel_model('reference_positions', params);
 
     denominator = (2 * log(params.alphaL))^2 - params.alphaW^2;
     if denominator <= 0
@@ -59,18 +61,21 @@ function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
             xW = waveguideX(n);
             Akn = (xk - xW)^2 + (zk - params.d)^2;
             gammaStar = sqrt(Akn * params.alphaW^2 / denominator);
-            yOpt = yk - gammaStar;
-            dOpt = norm([xk; yk; zk] - [xW; yOpt; params.d]);
-            gainOpt = sqrt(1 / params.M) * exp(-(params.alphaW / 2) * yOpt) * ...
-                (params.alphaL ^ dOpt) * (params.lambda * params.nMedium * params.v * sqrt(2 * params.a * params.b) / (2 * dOpt));
-            % The closed-form quantities yOpt / dOpt / gainOpt primarily
-            % depend on the geometry between user k and waveguide n. Under
-            % the current initialization approximation, different PA indices
-            % m on the same waveguide share the same closed-form value.
-            % This is an intentional implementation simplification rather
-            % than a missing dimension in yStar / dStar / Gpot.
+            yOptBase = yk - gammaStar;
+
             for m = 1:params.M
                 idx = (n - 1) * params.M + m;
+
+                % 为符合目标算法规范：按 (k,n,m) 逐 PA 计算势增益。
+                % 这里将闭式 y* 投影到该 PA 的局部可行区间，避免同一波导
+                % 上所有 m 直接复制同一值，同时保持初始化稳定性。
+                [yLower, yUpper] = paLocalBounds(yRef, params, m);
+                yOpt = min(max(yOptBase, yLower), yUpper);
+
+                dOpt = norm([xk; yk; zk] - [xW; yOpt; params.d]);
+                gainOpt = sqrt(1 / params.M) * exp(-(params.alphaW / 2) * yOpt) * ...
+                    (params.alphaL ^ dOpt) * (params.lambda * params.nMedium * params.v * sqrt(2 * params.a * params.b) / (2 * dOpt));
+
                 Gpot(k, idx) = abs(gainOpt);
                 yStar(k, n, m) = yOpt;
                 dStar(k, n, m) = dOpt;
@@ -80,9 +85,31 @@ function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
     Emax = max(Gpot, [], 2);
 end
 
+function [lowerBound, upperBound] = paLocalBounds(yRef, params, m)
+% 为符合目标算法规范的逐 PA 初始化边界。
+    if m == 1
+        lowerBound = 0;
+    else
+        lowerBound = 0.5 * (yRef(m - 1) + yRef(m));
+    end
+
+    if m == params.M
+        upperBound = params.Dy;
+    else
+        upperBound = 0.5 * (yRef(m) + yRef(m + 1));
+    end
+end
+
 function candidatePool = selectCandidatePool(Emax, KServ)
     [~, order] = sort(Emax, 'descend');
-    candidatePool = order(1:min(numel(order), 2 * KServ)).';
+    targetSize = 2 * KServ;
+    if numel(order) >= targetSize
+        % 为符合目标算法规范：当 K >= 2*KServ 时严格取 top 2*KServ。
+        candidatePool = order(1:targetSize).';
+    else
+        % 边界保护：仅当 K < 2*KServ 时退化为取全部用户。
+        candidatePool = order(:).';
+    end
 end
 
 function [utilityMatrix, movementCost] = buildUtility(candidatePool, yRef, yStar, Gpot, params)
@@ -219,6 +246,40 @@ function assignment = hungarianAssignment(costMatrix)
     end
 end
 
+
+function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, X0, yRef)
+% 工程化增强：用于批量实验统计与论文出图的数据摘要
+    diagnostics = struct();
+    diagnostics.candidatePoolSize = numel(candidatePool);
+    diagnostics.utility = struct( ...
+        'min', min(utilityMatrix(:)), ...
+        'max', max(utilityMatrix(:)), ...
+        'mean', mean(utilityMatrix(:)), ...
+        'median', median(utilityMatrix(:)));
+
+    moveFlat = movementCost(:);
+    diagnostics.movement = struct( ...
+        'mean', mean(moveFlat), ...
+        'median', median(moveFlat), ...
+        'p90', percentileApprox(moveFlat, 0.90), ...
+        'max', max(moveFlat));
+
+    offset = X0 - repmat(yRef, 1, size(X0, 2));
+    diagnostics.waveguideOffset = struct( ...
+        'meanAbsPerWaveguide', mean(abs(offset), 1), ...
+        'maxAbsPerWaveguide', max(abs(offset), [], 1));
+end
+
+function val = percentileApprox(x, q)
+    if isempty(x)
+        val = NaN;
+        return;
+    end
+    x = sort(x(:));
+    idx = max(1, min(numel(x), round(q * numel(x))));
+    val = x(idx);
+end
+
 function [Xbar0, X0] = buildInitialPositions(matching, yRef, yStar, params)
     Xbar0 = repmat(yRef, 1, params.N);
     for i = 1:numel(matching.selectedPairs)
@@ -240,7 +301,12 @@ function [theta0, phi0] = buildInitialAngles(state, matching, X0, params)
         userPos = state.users(pair.userIndex, :).';
         paPos = [waveguideX(pair.waveguideIndex); X0(pair.paIndex, pair.waveguideIndex); params.d];
         direction = userPos - paPos;
-        direction = direction / norm(direction);
+        normDir = norm(direction);
+        if normDir <= 1e-12
+            direction = [0; 1; 0]; % 数值鲁棒性保护：零向量归一化保护
+        else
+            direction = direction / normDir;
+        end
         theta0(pair.paIndex, pair.waveguideIndex) = acos(direction(3));
         phi0(pair.paIndex, pair.waveguideIndex) = atan2(direction(2), direction(1));
     end
