@@ -231,10 +231,10 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
 
     for ridx = 1:numel(refineIndices)
         idx = refineIndices(ridx);
+        pairData(idx).enteredRefine = true;
         if ~isfinite(pairData(idx).deltaCoarse)
             continue;
         end
-        pairData(idx).enteredRefine = true;
         [Wrefined, refinedMetrics, refineInfo] = refineCandidateWShort(state, params, pairData(idx).candidateSet, pairData(idx).Wcoarse, shortMaxIter);
         pairData(idx).refinedUsed = true;
         pairData(idx).shortRefineIterations = refineInfo.shortIterations;
@@ -292,7 +292,7 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
 
     evalSummary = struct();
     evalSummary.numCandidatesEvaluated = pairCount;
-    evalSummary.numCandidatesRefined = sum([pairData.refinedUsed]);
+    evalSummary.numCandidatesRefined = sum([pairData.enteredRefine]);
     evalSummary.bestDeltaCoarse = bestDeltaCoarse;
     evalSummary.bestDeltaFinal = bestDelta;
     evalSummary.bestCandidateUsedRefine = bestCandidateUsedRefine;
@@ -339,6 +339,10 @@ function [Wrefined, refinedMetrics, refineInfo] = refineCandidateWShort(state, p
         Wrefined = buildCandidateWMRT(Hs, params.Pmax);
     end
     initialMetrics = Signal_model('evaluate', state, params, Wrefined, candidateUsers);
+    if ~isfinite(initialMetrics.sumRate)
+        Wrefined = buildCandidateWMRT(Hs, params.Pmax);
+        initialMetrics = Signal_model('evaluate', state, params, Wrefined, candidateUsers);
+    end
     refinedMetrics = initialMetrics;
     numericalGuardTriggered = false;
     performedIter = 0;
