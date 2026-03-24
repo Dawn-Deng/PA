@@ -15,12 +15,14 @@ function [state, info] = AO_W(state, params)
     if isempty(state.W) || size(state.W, 2) ~= numStreams
         % Initialization stage does not optimize W. First AO W-block only
         % creates feasible warm-start, then enters standard WMMSE updates.
-        W = initializeWPlaceholder(size(H, 1), numStreams, params.Pmax);
-        warmStartReason = 'feasibleWarmStart';
+        W = initializeWFromChannel(Hs, params.Pmax);
+        warmStartReason = 'channelAwareWarmStart';
     else
         W = state.W;
         warmStartReason = 'reusePreviousW';
     end
+    warmStartPower = real(trace(W * W'));
+    warmStartColumnNorms = sqrt(sum(abs(W).^2, 1));
 
     initialMetrics = evaluateWBlockMetrics(Hs, W, params.sigma2, scheduledUsers);
     sumRateHistory = zeros(params.IW + 1, 1);
@@ -90,19 +92,29 @@ function [state, info] = AO_W(state, params)
     info.scheduledUsers = scheduledUsers;
     info.stopReason = stopReason; % reject/break reason
     info.warmStartReason = warmStartReason;
+    info.warmStartPower = warmStartPower;
+    info.warmStartColumnNorms = warmStartColumnNorms;
     info.finalTransmitPower = real(trace(state.W * state.W'));
     info.numericalGuardTriggered = numericalGuardTriggered; % diagnostic info
 end
 
-function W0 = initializeWPlaceholder(numAnt, numStreams, Pmax)
+function W0 = initializeWFromChannel(Hs, Pmax)
+    numStreams = size(Hs, 1);
+    numAnt = size(Hs, 2);
     W0 = zeros(numAnt, numStreams);
-    activeDiag = min(numAnt, numStreams);
-    if activeDiag > 0
-        W0(1:activeDiag, 1:activeDiag) = eye(activeDiag);
-        currentPower = real(trace(W0 * W0'));
-        if currentPower > 0
-            W0 = sqrt(Pmax / currentPower) * W0;
+    tinyNorm = 1e-12;
+    for k = 1:numStreams
+        hk = Hs(k, :).';
+        hkNorm = norm(hk);
+        if hkNorm > tinyNorm
+            W0(:, k) = conj(hk) / hkNorm;
+        else
+            W0(:, k) = zeros(numAnt, 1);
         end
+    end
+    currentPower = real(trace(W0 * W0'));
+    if isfinite(currentPower) && currentPower > 0
+        W0 = sqrt(Pmax / currentPower) * W0;
     end
 end
 

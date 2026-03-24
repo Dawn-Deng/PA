@@ -104,7 +104,9 @@ function [bestState, bestDelta, evaluatedPairs, bestPair] = evaluateRestrictedSw
         'weakUser', [], ...
         'strongUser', [], ...
         'candidateSet', [], ...
-        'delta', []), pairCount, 1);
+        'delta', [], ...
+        'candidateWPower', [], ...
+        'numericalGuardTriggered', false), pairCount, 1);
     pairIndex = 0;
 
     for weakIdx = 1:numel(weakUserPositions)
@@ -115,14 +117,31 @@ function [bestState, bestDelta, evaluatedPairs, bestPair] = evaluateRestrictedSw
             candidateUsers = state.S;
             candidateUsers(pos) = strongUser;
 
-            metrics = Signal_model('evaluate', state, params, state.W, candidateUsers);
-            delta = metrics.sumRate - state.sumRate;
+            Wcandidate = buildCandidateW(state, params, candidateUsers);
+            candidateWPower = real(trace(Wcandidate * Wcandidate'));
+            candidateWNorm = norm(Wcandidate, 'fro');
+            numericalGuardTriggered = any(~isfinite(Wcandidate(:))) || ~isfinite(candidateWPower) || ...
+                candidateWPower > params.Pmax * (1 + 1e-6) || candidateWNorm <= 1e-12;
+            if numericalGuardTriggered
+                delta = -inf;
+                metrics = struct('sinr', state.sinr, 'rate', state.rate, 'sumRate', -inf);
+            else
+                metrics = Signal_model('evaluate', state, params, Wcandidate, candidateUsers);
+                if ~isfinite(metrics.sumRate)
+                    numericalGuardTriggered = true;
+                    delta = -inf;
+                else
+                    delta = metrics.sumRate - state.sumRate;
+                end
+            end
 
             pairIndex = pairIndex + 1;
             evaluatedPairs(pairIndex).weakUser = weakUser;
             evaluatedPairs(pairIndex).strongUser = strongUser;
             evaluatedPairs(pairIndex).candidateSet = candidateUsers;
             evaluatedPairs(pairIndex).delta = delta;
+            evaluatedPairs(pairIndex).candidateWPower = candidateWPower;
+            evaluatedPairs(pairIndex).numericalGuardTriggered = numericalGuardTriggered;
 
             if delta > bestDelta
                 bestDelta = delta;
@@ -131,8 +150,30 @@ function [bestState, bestDelta, evaluatedPairs, bestPair] = evaluateRestrictedSw
                 bestState.sinr = metrics.sinr;
                 bestState.rate = metrics.rate;
                 bestState.sumRate = metrics.sumRate;
+                bestState.W = Wcandidate;
                 bestPair = struct('weakUser', weakUser, 'strongUser', strongUser, 'position', pos);
             end
         end
+    end
+end
+
+function Wcandidate = buildCandidateW(state, params, candidateUsers)
+    HsCandidate = state.channelMatrix(candidateUsers, :);
+    numStreams = size(HsCandidate, 1);
+    numAnt = size(HsCandidate, 2);
+    Wcandidate = zeros(numAnt, numStreams);
+    tinyNorm = 1e-12;
+    for k = 1:numStreams
+        hk = HsCandidate(k, :).';
+        hkNorm = norm(hk);
+        if hkNorm > tinyNorm
+            Wcandidate(:, k) = conj(hk) / hkNorm;
+        else
+            Wcandidate(:, k) = zeros(numAnt, 1);
+        end
+    end
+    totalPower = real(trace(Wcandidate * Wcandidate'));
+    if isfinite(totalPower) && totalPower > 0
+        Wcandidate = sqrt(params.Pmax / totalPower) * Wcandidate;
     end
 end
