@@ -89,7 +89,7 @@ function [state, info, memory] = AO_X(state, params, memory)
                 'candidateRateFinal', [], ...
                 'accepted', false, ...
                 'rejectReason', thisRejectReason, ...
-                'rejectReasonFinal', ''); %#ok<AGROW>
+                'rejectReasonFinal', thisRejectReason); %#ok<AGROW>
 
             alpha = alpha * params.positionLineSearchBeta;
         end
@@ -146,8 +146,6 @@ function [state, info, memory] = AO_X(state, params, memory)
         else
             if ~isempty(lsTrace) && all(projectionDistances <= 1e-12)
                 rejectReason = 'projectionCollapsedMove';
-            elseif alpha < params.positionLineSearchMin
-                rejectReason = 'stepTooSmall'; % reject reason
             else
                 rejectReason = 'stepTooSmall';
             end
@@ -273,7 +271,10 @@ function [Wrefined, refinedMetrics, refineInfo] = refinePositionCandidateWShort(
     H = Hs';
     numStreams = numel(scheduledUsers);
 
-    useWinit = ~isempty(Winit) && size(Winit, 2) == numStreams && all(isfinite(Winit(:)));
+    useWinit = ~isempty(Winit) ...
+        && size(Winit, 1) == size(Hs, 2) ...
+        && size(Winit, 2) == numStreams ...
+        && all(isfinite(Winit(:)));
     if useWinit
         W = Winit;
     else
