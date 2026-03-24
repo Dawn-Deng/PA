@@ -69,14 +69,10 @@ function [state, info, memory] = AO_angle(state, params, memory)
                 [bestRoundState, bestRoundRate, foundBetter, candidateAngles, candidateRates] = ...
                     evaluatePollingSet(state, params, m, n, centerTheta, centerPhi, stepTheta, stepPhi, directions);
 
-                thisRound = struct();
-                thisRound.roundIndex = paRounds;
-                thisRound.stepThetaBefore = stepTheta;
-                thisRound.stepPhiBefore = stepPhi;
-                thisRound.candidateAngles = candidateAngles;
-                thisRound.candidateRates = candidateRates;
-                thisRound.bestRoundRate = bestRoundRate;
-
+                stepThetaBefore = stepTheta;
+                stepPhiBefore = stepPhi;
+                acceptedThisRound = false;
+                rejectReason = '';
                 if foundBetter && bestRoundRate >= centerRate + params.epsilonTheta
                     state = bestRoundState;
                     centerTheta = state.theta(m, n);
@@ -84,19 +80,32 @@ function [state, info, memory] = AO_angle(state, params, memory)
                     centerRate = state.sumRate;
                     paAcceptedMoves = paAcceptedMoves + 1;
                     acceptedCount = acceptedCount + 1;
-                    thisRound.accepted = true;
-                    thisRound.rejectReason = '';
+                    acceptedThisRound = true;
                 else
                     if ~foundBetter
-                        thisRound.rejectReason = 'noBetterCandidate'; % reject reason
+                        rejectReason = 'noBetterCandidate'; % reject reason
                     else
-                        thisRound.rejectReason = 'belowEpsilonTheta'; % reject reason
+                        rejectReason = 'belowEpsilonTheta'; % reject reason
                     end
                     stepTheta = params.betaTheta * stepTheta;
                     stepPhi = params.betaPhi * stepPhi;
                 end
 
-                paTrace.roundTrace(end + 1) = thisRound; %#ok<AGROW>
+                thisRound = struct( ...
+                    'roundIndex', paRounds, ...
+                    'stepThetaBefore', stepThetaBefore, ...
+                    'stepPhiBefore', stepPhiBefore, ...
+                    'candidateAngles', candidateAngles, ...
+                    'candidateRates', candidateRates, ...
+                    'bestRoundRate', bestRoundRate, ...
+                    'accepted', acceptedThisRound, ...
+                    'rejectReason', rejectReason);
+
+                if isempty(paTrace.roundTrace)
+                    paTrace.roundTrace = thisRound;
+                else
+                    paTrace.roundTrace(end + 1) = thisRound; %#ok<AGROW>
+                end
             end
 
             if paAcceptedMoves > 0
