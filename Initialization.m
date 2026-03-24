@@ -38,7 +38,7 @@ function [state, initInfo] = Initialization(state, params)
     initInfo.X0 = X0;
     initInfo.theta0 = theta0;
     initInfo.phi0 = phi0;
-    initInfo.diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, Gpot, params.lambdaMov, X0, yRef); % 工程化增强：初始化诊断输出
+    initInfo.diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, Gpot, params.lambdaMov, X0, Xbar0, yStar, yRef, params.Dy); % 工程化增强：初始化诊断输出
 end
 
 function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
@@ -48,8 +48,6 @@ function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
     yStar = zeros(K, params.N, params.M);
     dStar = zeros(K, params.N, params.M);
     waveguideX = state.waveguideFeedPoints(:, 1);
-    yRef = Channel_model('reference_positions', params);
-
     denominator = (2 * log(params.alphaL))^2 - params.alphaW^2;
     if denominator <= 0
         error('Eq.(13) denominator is non-positive.');
@@ -67,10 +65,9 @@ function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
                 idx = (n - 1) * params.M + m;
 
                 % 为符合目标算法规范：按 (k,n,m) 逐 PA 计算势增益。
-                % 这里将闭式 y* 投影到该 PA 的局部可行区间，避免同一波导
-                % 上所有 m 直接复制同一值，同时保持初始化稳定性。
-                [yLower, yUpper] = paLocalBounds(yRef, params, m);
-                yOpt = min(max(yOptBase, yLower), yUpper);
+                % 这里将闭式 y* 投影到全局物理边界 [0, Dy]，并在后续
+                % buildInitialPositions 中统一通过可行域投影保证间距/排序约束。
+                yOpt = min(max(yOptBase, 0), params.Dy);
 
                 dOpt = norm([xk; yk; zk] - [xW; yOpt; params.d]);
                 gainOpt = sqrt(1 / params.M) * exp(-(params.alphaW / 2) * yOpt) * ...
@@ -247,7 +244,7 @@ function assignment = hungarianAssignment(costMatrix)
 end
 
 
-function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, Gpot, lambdaMov, X0, yRef)
+function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, Gpot, lambdaMov, X0, Xbar0, yStar, yRef, Dy)
 % 工程化增强：用于批量实验统计与论文出图的数据摘要
     diagnostics = struct();
     diagnostics.candidatePoolSize = numel(candidatePool);
@@ -278,6 +275,13 @@ function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatr
     diagnostics.minUtility = min(utilityMatrix(:));
     diagnostics.maxUtility = max(utilityMatrix(:));
     diagnostics.meanUtility = mean(utilityMatrix(:));
+
+    yStarFlat = yStar(:);
+    diagnostics.yStarMin = min(yStarFlat);
+    diagnostics.yStarMax = max(yStarFlat);
+    diagnostics.yStarMean = mean(yStarFlat);
+    diagnostics.fractionYStarOnBoundary = mean((yStarFlat <= 1e-9) | (yStarFlat >= Dy - 1e-9));
+    diagnostics.fractionProjectionMoved = mean(abs(X0(:) - Xbar0(:)) > 1e-9);
 end
 
 function val = percentileApprox(x, q)
