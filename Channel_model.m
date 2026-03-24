@@ -2,6 +2,7 @@ function varargout = Channel_model(varargin)
 %CHANNEL_MODEL 五文件版本中的系统模型/几何/信道统一入口。
 % 用法：
 %   [params, state, info] = Channel_model();
+%   [params, state, info] = Channel_model(paramsOverrideStruct);
 %   state = Channel_model('update_state', state, params);
 %   yRef  = Channel_model('reference_positions', params);
 %   xProj = Channel_model('project_waveguide_positions', xRaw, params);
@@ -12,8 +13,21 @@ function varargout = Channel_model(varargin)
         return;
     end
 
+    if nargin == 1 && isstruct(varargin{1})
+        [params, state, info] = initializeSystem(varargin{1});
+        varargout = {params, state, info};
+        return;
+    end
+
     action = lower(string(varargin{1}));
     switch action
+        case "initialize"
+            override = struct();
+            if nargin >= 2 && isstruct(varargin{2})
+                override = varargin{2};
+            end
+            [params, state, info] = initializeSystem(override);
+            varargout = {params, state, info};
         case "update_state"
             varargout = {updateState(varargin{2}, varargin{3})};
         case "reference_positions"
@@ -25,10 +39,17 @@ function varargout = Channel_model(varargin)
     end
 end
 
-function [params, state, info] = initializeSystem()
+function [params, state, info] = initializeSystem(paramsOverride)
+    if nargin < 1
+        paramsOverride = struct();
+    end
+
     params = defaultParameters();
+    params = applyOverrides(params, paramsOverride);
+    validateParameters(params); % 工程化增强：统一参数校验
+
     state = struct();
-    state.users = generateRandomUsers(params);
+    state.users = generateUsers(params);
     state.X = repmat(referencePositions(params), 1, params.N);
     state.theta = pi * ones(params.M, params.N);
     state.phi = zeros(params.M, params.N);
@@ -42,6 +63,7 @@ function [params, state, info] = initializeSystem()
     info = struct();
     info.referencePositions = referencePositions(params);
     info.description = 'Baseline geometry before initialization.';
+    info.userGenerationMode = params.userGeneration.mode;
 end
 
 function params = defaultParameters()
@@ -75,6 +97,12 @@ function params = defaultParameters()
     params.randomSeed = 20260321;
     params.symbolSeed = 20260322;
 
+    % 工程化增强：场景预设，默认保持 uniform 兼容旧流程
+    params.userGeneration = struct();
+    params.userGeneration.mode = 'uniform';
+    params.userGeneration.hotspotCenters = [params.Dx*0.3, 9; params.Dx*0.7, 17];
+    params.userGeneration.hotspotStd = [1.2, 1.5];
+
     params.IW = 40;
     params.wmmseTol = 1e-6;
     params.muBisectionTol = 1e-8;
@@ -105,12 +133,58 @@ function params = defaultParameters()
     params.Lout = 4;
     params.maxSwapPerUpdate = 4;
     params.epsilonS = 1e-7;
+
+    % 工程化增强：日志与结果导出配置
+    params.verbosity = 1;
+    params.saveResults = false;
+    params.savePath = 'results_latest.mat';
 end
 
-function users = generateRandomUsers(params)
+function params = applyOverrides(params, override)
+    if isempty(override)
+        return;
+    end
+    f = fieldnames(override);
+    for i = 1:numel(f)
+        params.(f{i}) = override.(f{i});
+    end
+end
+
+function users = generateUsers(params)
+% 工程化增强：支持 uniform / clustered / corridor 与外部用户坐标输入
+    if isfield(params, 'userPositions') && ~isempty(params.userPositions)
+        users = params.userPositions;
+        return;
+    end
+
     rng(params.randomSeed);
-    x = params.userRegionX(1) + diff(params.userRegionX) * rand(params.K, 1);
-    y = params.userRegionY(1) + diff(params.userRegionY) * rand(params.K, 1);
+    modeName = lower(string(params.userGeneration.mode));
+    switch modeName
+        case "uniform"
+            x = params.userRegionX(1) + diff(params.userRegionX) * rand(params.K, 1);
+            y = params.userRegionY(1) + diff(params.userRegionY) * rand(params.K, 1);
+        case "clustered"
+            centers = params.userGeneration.hotspotCenters;
+            stdVec = params.userGeneration.hotspotStd;
+            numCenters = size(centers, 1);
+            assign = randi(numCenters, params.K, 1);
+            x = zeros(params.K, 1);
+            y = zeros(params.K, 1);
+            for k = 1:params.K
+                c = assign(k);
+                x(k) = centers(c, 1) + stdVec(1) * randn();
+                y(k) = centers(c, 2) + stdVec(min(2, numel(stdVec))) * randn();
+            end
+            x = min(max(x, params.userRegionX(1)), params.userRegionX(2));
+            y = min(max(y, params.userRegionY(1)), params.userRegionY(2));
+        case "corridor"
+            x = params.userRegionX(1) + diff(params.userRegionX) * rand(params.K, 1);
+            yCenter = mean(params.userRegionY);
+            y = yCenter + 0.15 * diff(params.userRegionY) * randn(params.K, 1);
+            y = min(max(y, params.userRegionY(1)), params.userRegionY(2));
+        otherwise
+            error('Unknown userGeneration.mode: %s', modeName);
+    end
     users = [x, y, zeros(params.K, 1)];
 end
 
@@ -135,6 +209,7 @@ function state = updateState(state, params)
     state.H = H;
     state.channelMatrix = H';
     state.channelDetails = details;
+    sanityCheckState(state, params); % 工程化增强：统一状态数值健康检查
 end
 
 function [feedPoints, paPositions] = buildGeometry(X, params)

@@ -38,6 +38,7 @@ function [state, initInfo] = Initialization(state, params)
     initInfo.X0 = X0;
     initInfo.theta0 = theta0;
     initInfo.phi0 = phi0;
+    initInfo.diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, X0, yRef); % 工程化增强：初始化诊断输出
 end
 
 function [Gpot, yStar, dStar, Emax] = computePotentialGain(state, params)
@@ -245,6 +246,40 @@ function assignment = hungarianAssignment(costMatrix)
     end
 end
 
+
+function diagnostics = buildInitializationDiagnostics(candidatePool, utilityMatrix, movementCost, X0, yRef)
+% 工程化增强：用于批量实验统计与论文出图的数据摘要
+    diagnostics = struct();
+    diagnostics.candidatePoolSize = numel(candidatePool);
+    diagnostics.utility = struct( ...
+        'min', min(utilityMatrix(:)), ...
+        'max', max(utilityMatrix(:)), ...
+        'mean', mean(utilityMatrix(:)), ...
+        'median', median(utilityMatrix(:)));
+
+    moveFlat = movementCost(:);
+    diagnostics.movement = struct( ...
+        'mean', mean(moveFlat), ...
+        'median', median(moveFlat), ...
+        'p90', percentileApprox(moveFlat, 0.90), ...
+        'max', max(moveFlat));
+
+    offset = X0 - repmat(yRef, 1, size(X0, 2));
+    diagnostics.waveguideOffset = struct( ...
+        'meanAbsPerWaveguide', mean(abs(offset), 1), ...
+        'maxAbsPerWaveguide', max(abs(offset), [], 1));
+end
+
+function val = percentileApprox(x, q)
+    if isempty(x)
+        val = NaN;
+        return;
+    end
+    x = sort(x(:));
+    idx = max(1, min(numel(x), round(q * numel(x))));
+    val = x(idx);
+end
+
 function [Xbar0, X0] = buildInitialPositions(matching, yRef, yStar, params)
     Xbar0 = repmat(yRef, 1, params.N);
     for i = 1:numel(matching.selectedPairs)
@@ -266,7 +301,12 @@ function [theta0, phi0] = buildInitialAngles(state, matching, X0, params)
         userPos = state.users(pair.userIndex, :).';
         paPos = [waveguideX(pair.waveguideIndex); X0(pair.paIndex, pair.waveguideIndex); params.d];
         direction = userPos - paPos;
-        direction = direction / norm(direction);
+        normDir = norm(direction);
+        if normDir <= 1e-12
+            direction = [0; 1; 0]; % 数值鲁棒性保护：零向量归一化保护
+        else
+            direction = direction / normDir;
+        end
         theta0(pair.paIndex, pair.waveguideIndex) = acos(direction(3));
         phi0(pair.paIndex, pair.waveguideIndex) = atan2(direction(2), direction(1));
     end
