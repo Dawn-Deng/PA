@@ -99,6 +99,12 @@ function metrics = evaluateSignalMetrics(state, params, W, S)
     end
 
     Hs = state.channelMatrix(S, :);
+    if isempty(Hs) || any(~isfinite(real(Hs(:)))) || any(~isfinite(imag(Hs(:))))
+        % 数值鲁棒性保护：异常信道时返回稳定零指标
+        metrics = struct('sinr', zeros(numel(S), 1), 'rate', zeros(numel(S), 1), ...
+            'sumRate', 0, 'scheduledUsers', S(:).', 'W', W);
+        return;
+    end
     numStreams = numel(S);
     sinr = zeros(numStreams, 1);
     rate = zeros(numStreams, 1);
@@ -106,9 +112,19 @@ function metrics = evaluateSignalMetrics(state, params, W, S)
         coupling = Hs(k, :) * W;
         signalPower = abs(coupling(k))^2;
         interferencePower = sum(abs(coupling).^2) - signalPower;
-        sinr(k) = signalPower / (interferencePower + params.sigma2);
+        interferencePower = max(interferencePower, 0); % 数值鲁棒性保护
+        denom = interferencePower + params.sigma2;
+        sinr(k) = signalPower / max(denom, eps);
         rate(k) = log2(1 + sinr(k));
     end
-    metrics = struct('sinr', sinr, 'rate', rate, 'sumRate', sum(rate), ...
+    sumRate = sum(rate);
+    if any(~isfinite(sinr)) || any(~isfinite(rate)) || ~isfinite(sumRate)
+        % 数值鲁棒性保护：检测 NaN/Inf 并回退到稳定值
+        sinr = zeros(numStreams, 1);
+        rate = zeros(numStreams, 1);
+        sumRate = 0;
+    end
+
+    metrics = struct('sinr', sinr, 'rate', rate, 'sumRate', sumRate, ...
         'scheduledUsers', S(:).', 'W', W);
 end

@@ -1,57 +1,90 @@
 function [state, info] = AO_S(state, params, t)
-%AO_S User-set block update in the alternating-optimization loop.
-% A periodically triggered restricted single-swap best-improvement search is
-% used. Between set-update iterations, the user set remains unchanged. When
-% triggered, swap candidates are scored using the true sum rate with the
-% current W fixed, without re-running a full WMMSE update for each swap.
+%AO_S User-set block update with full swapTrace.
 
     info = struct( ...
         'triggered', mod(t, params.TS) == 0, ...
         'acceptedSwaps', 0, ...
         'bestDelta', 0, ...
-        'weakUserSet', [], ...
-        'strongUserSet', [], ...
-        'evaluatedPairs', []);
+        'swapTrace', [], ... % inner trace
+        'breakReason', 'notTriggered');
 
     if ~info.triggered
         return;
     end
 
+    swapTrace = repmat(struct( ...
+        'swapIter', [], ...
+        'weakUserSet', [], ...
+        'strongUserSet', [], ...
+        'evaluatedPairs', [], ...
+        'bestDelta', [], ...
+        'bestPair', [], ...
+        'accepted', false, ...
+        'sumRateBefore', [], ...
+        'sumRateAfter', [], ...
+        'breakReason', ''), params.maxSwapPerUpdate, 1);
+
     for swapIter = 1:params.maxSwapPerUpdate
+        sumRateBefore = state.sumRate;
         [weakUserPositions, weakUsers] = selectWeakUsers(state, params);
         strongExternal = selectStrongExternalUsers(state, params);
-        info.weakUserSet = weakUsers;
-        info.strongUserSet = strongExternal;
+
+        swapTrace(swapIter).swapIter = swapIter;
+        swapTrace(swapIter).weakUserSet = weakUsers;
+        swapTrace(swapIter).strongUserSet = strongExternal;
+        swapTrace(swapIter).sumRateBefore = sumRateBefore;
 
         if isempty(weakUserPositions) || isempty(strongExternal)
-            info.bestDelta = -inf;
+            swapTrace(swapIter).bestDelta = -inf;
+            swapTrace(swapIter).accepted = false;
+            swapTrace(swapIter).sumRateAfter = state.sumRate;
+            swapTrace(swapIter).breakReason = 'noWeakOrStrongCandidates';
+            info.breakReason = 'noWeakOrStrongCandidates';
             break;
         end
 
-        [bestState, bestDelta, evaluatedPairs] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal);
-        info.bestDelta = bestDelta;
-        info.evaluatedPairs = evaluatedPairs;
+        [bestState, bestDelta, evaluatedPairs, bestPair] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal);
+        swapTrace(swapIter).evaluatedPairs = evaluatedPairs;
+        swapTrace(swapIter).bestDelta = bestDelta;
+        swapTrace(swapIter).bestPair = bestPair;
 
         if bestDelta >= params.epsilonS
             state = bestState;
             info.acceptedSwaps = info.acceptedSwaps + 1;
+            swapTrace(swapIter).accepted = true;
+            swapTrace(swapIter).sumRateAfter = state.sumRate;
+            swapTrace(swapIter).breakReason = '';
+            info.breakReason = '';
         else
+            swapTrace(swapIter).accepted = false;
+            swapTrace(swapIter).sumRateAfter = state.sumRate;
+            swapTrace(swapIter).breakReason = 'bestDeltaBelowThreshold';
+            info.breakReason = 'bestDeltaBelowThreshold';
             break;
         end
+
+        if swapIter == params.maxSwapPerUpdate
+            info.breakReason = 'reachedMaxSwapPerUpdate';
+        end
+    end
+
+    validMask = arrayfun(@(x) ~isempty(x.swapIter), swapTrace);
+    info.swapTrace = swapTrace(validMask);
+    if isempty(info.swapTrace)
+        info.swapTrace = repmat(swapTrace(1), 0, 1);
+    end
+    if ~isempty(info.swapTrace)
+        info.bestDelta = info.swapTrace(end).bestDelta;
     end
 end
 
 function [weakUserPositions, weakUsers] = selectWeakUsers(state, params)
-% Internal weak-user set I_weak^(t): the Lin served users with the lowest
-% individual rates under the current (X, W, theta, phi).
     [~, orderAsc] = sort(state.rate, 'ascend');
     weakUserPositions = orderAsc(1:min(params.Lin, numel(state.S)));
     weakUsers = state.S(weakUserPositions);
 end
 
 function strongExternal = selectStrongExternalUsers(state, params)
-% External strong-user set J_strong^(t): the Lout users in C \ S sorted by
-% descending initialization-stage Emax, used only for coarse screening.
     external = setdiff(state.candidatePool, state.S, 'stable');
     if isempty(external)
         strongExternal = [];
@@ -62,13 +95,10 @@ function strongExternal = selectStrongExternalUsers(state, params)
     strongExternal = external(extOrder(1:min(params.Lout, numel(external))));
 end
 
-function [bestState, bestDelta, evaluatedPairs] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal)
-% Enumerate all restricted single-swap pairs in
-%   I_weak^(t) x J_strong^(t),
-% and evaluate each candidate by the true sum rate with the current W held
-% fixed. The best-improvement pair is selected.
+function [bestState, bestDelta, evaluatedPairs, bestPair] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal)
     bestDelta = -inf;
     bestState = state;
+    bestPair = struct('weakUser', [], 'strongUser', [], 'position', []);
     pairCount = numel(weakUserPositions) * numel(strongExternal);
     evaluatedPairs = repmat(struct( ...
         'weakUser', [], ...
@@ -101,6 +131,7 @@ function [bestState, bestDelta, evaluatedPairs] = evaluateRestrictedSwapNeighbor
                 bestState.sinr = metrics.sinr;
                 bestState.rate = metrics.rate;
                 bestState.sumRate = metrics.sumRate;
+                bestPair = struct('weakUser', weakUser, 'strongUser', strongUser, 'position', pos);
             end
         end
     end

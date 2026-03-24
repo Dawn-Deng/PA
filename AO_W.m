@@ -5,13 +5,7 @@ function [state, info] = AO_W(state, params)
 %   W^(t+1) = arg max_W R_sum(S^(t), X^(t), W, theta^(t), phi^(t))
 %             s.t. tr(WW^H) <= Pmax
 %
-% by the standard WMMSE equivalence:
-%   1) update MMSE receivers u_k
-%   2) update WMMSE weights v_k = 1 / e_k
-%   3) update W under the total power constraint via bisection on mu
-%
-% The inner loop terminates when either IW iterations are reached or the
-% improvement of the sum rate is no larger than params.wmmseTol.
+% by the standard WMMSE equivalence.
 
     scheduledUsers = state.S(:).';
     Hs = state.channelMatrix(scheduledUsers, :);
@@ -19,40 +13,57 @@ function [state, info] = AO_W(state, params)
     numStreams = numel(scheduledUsers);
 
     if isempty(state.W) || size(state.W, 2) ~= numStreams
-        % Initialization stage does not optimize W. When AO enters the
-        % W-block for the first time, we only build a feasible non-optimized
-        % starting point; the first effective W update is the updateW(...)
-        % call inside the inner WMMSE loop below.
+        % Initialization stage does not optimize W. First AO W-block only
+        % creates feasible warm-start, then enters standard WMMSE updates.
         W = initializeWPlaceholder(size(H, 1), numStreams, params.Pmax);
+        warmStartReason = 'feasibleWarmStart';
     else
         W = state.W;
+        warmStartReason = 'reusePreviousW';
     end
 
     initialMetrics = evaluateWBlockMetrics(Hs, W, params.sigma2, scheduledUsers);
     sumRateHistory = zeros(params.IW + 1, 1);
     sumRateHistory(1) = initialMetrics.sumRate;
+    deltaSumRateHistory = zeros(params.IW, 1);       % inner trace
+    transmitPowerHistory = zeros(params.IW, 1);      % inner trace
+    muHistory = nan(params.IW, 1);                   % inner trace
     mseHistory = zeros(params.IW, numStreams);
     receiverHistory = zeros(numStreams, params.IW);
     weightHistory = zeros(numStreams, params.IW);
     converged = false;
     numIterations = params.IW;
+    stopReason = 'IW';
+    numericalGuardTriggered = false;
 
     for iter = 1:params.IW
         u = updateReceivers(Hs, W, params.sigma2);
         e = computeMSE(Hs, W, u, params.sigma2);
         v = 1 ./ max(real(e), eps);
 
-        W = updateW(H, u, v, params);
+        [W, wUpdateTrace] = updateW(H, u, v, params);
         currentMetrics = evaluateWBlockMetrics(Hs, W, params.sigma2, scheduledUsers);
+
+        if ~isfinite(currentMetrics.sumRate)
+            numericalGuardTriggered = true;
+            currentMetrics = initialMetrics;
+            stopReason = 'numericalGuardTriggered';
+            numIterations = iter;
+            break;
+        end
 
         receiverHistory(:, iter) = u;
         weightHistory(:, iter) = v;
         mseHistory(iter, :) = real(e).';
         sumRateHistory(iter + 1) = currentMetrics.sumRate;
+        deltaSumRateHistory(iter) = sumRateHistory(iter + 1) - sumRateHistory(iter);
+        transmitPowerHistory(iter) = real(trace(W * W'));
+        muHistory(iter) = wUpdateTrace.muFinal;
 
-        if sumRateHistory(iter + 1) - sumRateHistory(iter) <= params.wmmseTol
+        if deltaSumRateHistory(iter) <= params.wmmseTol
             converged = true;
             numIterations = iter;
+            stopReason = 'tol'; % reject/break reason
             break;
         end
     end
@@ -68,18 +79,22 @@ function [state, info] = AO_W(state, params)
     info.mse = computeMSE(Hs, state.W, info.receivers, params.sigma2);
     info.weights = 1 ./ max(real(info.mse), eps);
     info.sumRateHistory = sumRateHistory(1:numIterations + 1);
+    info.deltaSumRateHistory = deltaSumRateHistory(1:numIterations); % inner trace
+    info.transmitPowerHistory = transmitPowerHistory(1:numIterations); % inner trace
+    info.muHistory = muHistory(1:numIterations); % inner trace
     info.mseHistory = mseHistory(1:numIterations, :);
     info.receiverHistory = receiverHistory(:, 1:numIterations);
     info.weightHistory = weightHistory(:, 1:numIterations);
     info.converged = converged;
     info.iterations = numIterations;
     info.scheduledUsers = scheduledUsers;
+    info.stopReason = stopReason; % reject/break reason
+    info.warmStartReason = warmStartReason;
+    info.finalTransmitPower = real(trace(state.W * state.W'));
+    info.numericalGuardTriggered = numericalGuardTriggered; % diagnostic info
 end
 
 function W0 = initializeWPlaceholder(numAnt, numStreams, Pmax)
-% Builds a feasible placeholder only. This is not interpreted as the first
-% optimized W-update in the paper; the first effective update happens in
-% the AO W-block through updateW(...) after u_k and v_k are formed.
     W0 = zeros(numAnt, numStreams);
     activeDiag = min(numAnt, numStreams);
     if activeDiag > 0
@@ -92,36 +107,29 @@ function W0 = initializeWPlaceholder(numAnt, numStreams, Pmax)
 end
 
 function u = updateReceivers(Hs, W, sigma2)
-% Implements the MMSE receiver update
-%   u_k = (h_k^H w_k) / (sum_j |h_k^H w_j|^2 + sigma^2).
     numStreams = size(Hs, 1);
     u = zeros(numStreams, 1);
     for k = 1:numStreams
-        hkH = Hs(k, :);          % hkH = h_k^H
-        coupling = hkH * W;      % entries are h_k^H w_j
-        desiredTerm = coupling(k); % desiredTerm = h_k^H w_k
+        hkH = Hs(k, :);
+        coupling = hkH * W;
+        desiredTerm = coupling(k);
         u(k) = desiredTerm / (sum(abs(coupling).^2) + sigma2);
     end
 end
 
 function e = computeMSE(Hs, W, u, sigma2)
-% Implements
-%   e_k = |u_k|^2 (sum_j |h_k^H w_j|^2 + sigma^2)
-%         - 2 Re{u_k h_k^H w_k} + 1.
     numStreams = size(Hs, 1);
     e = zeros(numStreams, 1);
     for k = 1:numStreams
-        hkH = Hs(k, :);          % hkH = h_k^H
-        coupling = hkH * W;      % entries are h_k^H w_j
-        desiredTerm = coupling(k); % desiredTerm = h_k^H w_k
+        hkH = Hs(k, :);
+        coupling = hkH * W;
+        desiredTerm = coupling(k);
         totalPower = sum(abs(coupling).^2) + sigma2;
         e(k) = abs(u(k))^2 * totalPower - 2 * real(u(k) * desiredTerm) + 1;
     end
 end
 
-function W = updateW(H, u, v, params)
-% For fixed {u_k} and {v_k}, updates W by
-%   w_k = (sum_j v_j |u_j|^2 h_j h_j^H + mu I)^(-1) v_k u_k^* h_k.
+function [W, traceInfo] = updateW(H, u, v, params)
     numAnt = size(H, 1);
     numStreams = size(H, 2);
     A = zeros(numAnt, numAnt);
@@ -131,16 +139,20 @@ function W = updateW(H, u, v, params)
         A = A + v(k) * abs(u(k))^2 * (hk * hk');
         B(:, k) = v(k) * conj(u(k)) * hk;
     end
-    W = solvePowerConstrained(A, B, params);
+    [W, muFinal, usedBisection] = solvePowerConstrained(A, B, params);
+    traceInfo = struct('muFinal', muFinal, 'usedBisection', usedBisection);
 end
 
-function W = solvePowerConstrained(A, B, params)
+function [W, muFinal, usedBisection] = solvePowerConstrained(A, B, params)
     Wfree = computeW(A, B, 0);
     if real(trace(Wfree * Wfree')) <= params.Pmax
         W = Wfree;
+        muFinal = 0;
+        usedBisection = false;
         return;
     end
 
+    usedBisection = true;
     muLow = 0;
     muHigh = 1;
     while real(trace(computeW(A, B, muHigh) * computeW(A, B, muHigh)')) > params.Pmax
@@ -153,6 +165,7 @@ function W = solvePowerConstrained(A, B, params)
         powerMid = real(trace(Wmid * Wmid'));
         if abs(powerMid - params.Pmax) <= params.muBisectionTol
             W = Wmid;
+            muFinal = muMid;
             return;
         end
         if powerMid > params.Pmax
@@ -163,6 +176,7 @@ function W = solvePowerConstrained(A, B, params)
     end
 
     W = computeW(A, B, muHigh);
+    muFinal = muHigh;
 end
 
 function W = computeW(A, B, mu)
@@ -175,9 +189,9 @@ function metrics = evaluateWBlockMetrics(Hs, W, sigma2, scheduledUsers)
     rate = zeros(numStreams, 1);
 
     for k = 1:numStreams
-        hkH = Hs(k, :);          % hkH = h_k^H
-        coupling = hkH * W;      % entries are h_k^H w_j
-        desiredTerm = coupling(k); % desiredTerm = h_k^H w_k
+        hkH = Hs(k, :);
+        coupling = hkH * W;
+        desiredTerm = coupling(k);
         signalPower = abs(desiredTerm)^2;
         interferencePower = sum(abs(coupling).^2) - signalPower;
         sinr(k) = signalPower / (interferencePower + sigma2);
