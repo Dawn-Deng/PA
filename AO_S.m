@@ -18,12 +18,20 @@ function [state, info] = AO_S(state, params, t)
         'strongUserSet', [], ...
         'evaluatedPairs', [], ...
         'bestDelta', [], ...
+        'epsilonS', [], ...
+        'bestDeltaMinusEpsilonS', [], ...
         'bestDeltaCoarse', [], ...
         'bestDeltaFinal', [], ...
         'numCandidatesEvaluated', [], ...
         'numCandidatesRefined', [], ...
+        'numCandidatesWithPositiveCoarseDelta', 0, ...
+        'numCandidatesWithPositiveFinalDelta', 0, ...
+        'numCandidatesAboveEpsilonS', 0, ...
+        'bestCandidateEnteredRefine', false, ...
         'bestPair', [], ...
         'acceptedUsingRefine', false, ...
+        'acceptedSwapUserOut', [], ...
+        'acceptedSwapUserIn', [], ...
         'accepted', false, ...
         'sumRateBefore', [], ...
         'sumRateAfter', [], ...
@@ -41,6 +49,8 @@ function [state, info] = AO_S(state, params, t)
 
         if isempty(weakUserPositions) || isempty(strongExternal)
             swapTrace(swapIter).bestDelta = -inf;
+            swapTrace(swapIter).epsilonS = params.epsilonS;
+            swapTrace(swapIter).bestDeltaMinusEpsilonS = -inf;
             swapTrace(swapIter).bestDeltaCoarse = -inf;
             swapTrace(swapIter).bestDeltaFinal = -inf;
             swapTrace(swapIter).numCandidatesEvaluated = 0;
@@ -56,10 +66,16 @@ function [state, info] = AO_S(state, params, t)
         [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluateRestrictedSwapNeighborhood(state, params, weakUserPositions, weakUsers, strongExternal);
         swapTrace(swapIter).evaluatedPairs = evaluatedPairs;
         swapTrace(swapIter).bestDelta = bestDelta;
+        swapTrace(swapIter).epsilonS = params.epsilonS;
+        swapTrace(swapIter).bestDeltaMinusEpsilonS = bestDelta - params.epsilonS;
         swapTrace(swapIter).bestDeltaCoarse = evalSummary.bestDeltaCoarse;
         swapTrace(swapIter).bestDeltaFinal = evalSummary.bestDeltaFinal;
         swapTrace(swapIter).numCandidatesEvaluated = evalSummary.numCandidatesEvaluated;
         swapTrace(swapIter).numCandidatesRefined = evalSummary.numCandidatesRefined;
+        swapTrace(swapIter).numCandidatesWithPositiveCoarseDelta = evalSummary.numCandidatesWithPositiveCoarseDelta;
+        swapTrace(swapIter).numCandidatesWithPositiveFinalDelta = evalSummary.numCandidatesWithPositiveFinalDelta;
+        swapTrace(swapIter).numCandidatesAboveEpsilonS = evalSummary.numCandidatesAboveEpsilonS;
+        swapTrace(swapIter).bestCandidateEnteredRefine = evalSummary.bestCandidateEnteredRefine;
         swapTrace(swapIter).bestPair = bestPair;
         swapTrace(swapIter).acceptedUsingRefine = false;
 
@@ -68,6 +84,8 @@ function [state, info] = AO_S(state, params, t)
             info.acceptedSwaps = info.acceptedSwaps + 1;
             swapTrace(swapIter).accepted = true;
             swapTrace(swapIter).acceptedUsingRefine = evalSummary.bestCandidateUsedRefine;
+            swapTrace(swapIter).acceptedSwapUserOut = bestPair.weakUser;
+            swapTrace(swapIter).acceptedSwapUserIn = bestPair.strongUser;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = '';
             info.breakReason = '';
@@ -116,6 +134,7 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     bestDeltaCoarse = -inf;
     bestState = state;
     bestPair = struct('weakUser', [], 'strongUser', [], 'position', []);
+    bestPairIndex = 0;
     bestCandidateUsedRefine = false;
     pairCount = numel(weakUserPositions) * numel(strongExternal);
     evaluatedPairs = repmat(struct( ...
@@ -127,13 +146,18 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
         'deltaFinal', [], ...
         'coarseSumRate', [], ...
         'finalSumRate', [], ...
+        'rankByCoarseDelta', [], ...
+        'enteredRefine', false, ...
+        'initialSumRateEstimate', [], ...
+        'improvementInsideRefine', [], ...
+        'epsilonSMargin', [], ...
         'refinedUsed', false, ...
         'candidateWPower', [], ...
         'shortRefineIterations', 0, ...
         'numericalGuardTriggered', false), pairCount, 1);
     pairIndex = 0;
-    shortMaxIter = 3;
-    numRefineCandidates = min(2, pairCount);
+    shortMaxIter = 8;
+    numRefineCandidates = min(4, pairCount);
     pairData = repmat(struct( ...
         'weakUser', [], ...
         'strongUser', [], ...
@@ -142,10 +166,14 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
         'Wcoarse', [], ...
         'coarseMetrics', [], ...
         'deltaCoarse', -inf, ...
+        'rankByCoarseDelta', [], ...
+        'enteredRefine', false, ...
         'candidateWPower', NaN, ...
         'refinedUsed', false, ...
         'Wfinal', [], ...
         'finalMetrics', [], ...
+        'initialSumRateEstimate', [], ...
+        'improvementInsideRefine', [], ...
         'deltaFinal', -inf, ...
         'shortRefineIterations', 0, ...
         'numericalGuardTriggered', false), pairCount, 1);
@@ -195,15 +223,23 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     coarseDeltas = [pairData.deltaCoarse];
     [~, order] = sort(coarseDeltas, 'descend');
     refineIndices = order(1:numRefineCandidates);
+    rankByCoarse = zeros(1, pairCount);
+    rankByCoarse(order) = 1:pairCount;
+    for i = 1:pairCount
+        pairData(i).rankByCoarseDelta = rankByCoarse(i);
+    end
 
     for ridx = 1:numel(refineIndices)
         idx = refineIndices(ridx);
         if ~isfinite(pairData(idx).deltaCoarse)
             continue;
         end
+        pairData(idx).enteredRefine = true;
         [Wrefined, refinedMetrics, refineInfo] = refineCandidateWShort(state, params, pairData(idx).candidateSet, pairData(idx).Wcoarse, shortMaxIter);
         pairData(idx).refinedUsed = true;
         pairData(idx).shortRefineIterations = refineInfo.shortIterations;
+        pairData(idx).initialSumRateEstimate = refineInfo.initialSumRateEstimate;
+        pairData(idx).improvementInsideRefine = refineInfo.improvementInsideRefine;
         guardTriggered = pairData(idx).numericalGuardTriggered || refineInfo.numericalGuardTriggered;
         [refinedInvalid, refinedPower] = isInvalidCandidateW(Wrefined, params.Pmax);
         pairData(idx).candidateWPower = refinedPower;
@@ -230,6 +266,11 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
         evaluatedPairs(i).deltaFinal = pairData(i).deltaFinal;
         evaluatedPairs(i).coarseSumRate = pairData(i).coarseMetrics.sumRate;
         evaluatedPairs(i).finalSumRate = pairData(i).finalMetrics.sumRate;
+        evaluatedPairs(i).rankByCoarseDelta = pairData(i).rankByCoarseDelta;
+        evaluatedPairs(i).enteredRefine = pairData(i).enteredRefine;
+        evaluatedPairs(i).initialSumRateEstimate = pairData(i).initialSumRateEstimate;
+        evaluatedPairs(i).improvementInsideRefine = pairData(i).improvementInsideRefine;
+        evaluatedPairs(i).epsilonSMargin = pairData(i).deltaFinal - params.epsilonS;
         evaluatedPairs(i).refinedUsed = pairData(i).refinedUsed;
         evaluatedPairs(i).candidateWPower = pairData(i).candidateWPower;
         evaluatedPairs(i).shortRefineIterations = pairData(i).shortRefineIterations;
@@ -244,6 +285,7 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
             bestState.sumRate = pairData(i).finalMetrics.sumRate;
             bestState.W = pairData(i).Wfinal;
             bestPair = struct('weakUser', pairData(i).weakUser, 'strongUser', pairData(i).strongUser, 'position', pairData(i).position);
+            bestPairIndex = i;
             bestCandidateUsedRefine = pairData(i).refinedUsed;
         end
     end
@@ -254,6 +296,10 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     evalSummary.bestDeltaCoarse = bestDeltaCoarse;
     evalSummary.bestDeltaFinal = bestDelta;
     evalSummary.bestCandidateUsedRefine = bestCandidateUsedRefine;
+    evalSummary.numCandidatesWithPositiveCoarseDelta = sum([pairData.deltaCoarse] > 0);
+    evalSummary.numCandidatesWithPositiveFinalDelta = sum([pairData.deltaFinal] > 0);
+    evalSummary.numCandidatesAboveEpsilonS = sum([pairData.deltaFinal] >= params.epsilonS);
+    evalSummary.bestCandidateEnteredRefine = (bestPairIndex > 0) && pairData(bestPairIndex).enteredRefine;
 end
 
 function Wcandidate = buildCandidateWCoarse(state, params, candidateUsers)
@@ -280,8 +326,20 @@ end
 function [Wrefined, refinedMetrics, refineInfo] = refineCandidateWShort(state, params, candidateUsers, Winit, maxIterShort)
     Hs = state.channelMatrix(candidateUsers, :);
     H = Hs';
-    Wrefined = Winit;
-    refinedMetrics = Signal_model('evaluate', state, params, Wrefined, candidateUsers);
+    numStreams = size(Hs, 1);
+    numAnt = size(Hs, 2);
+    useWinit = ~isempty(Winit) && size(Winit, 1) == numAnt && size(Winit, 2) == numStreams;
+    if useWinit
+        [invalidInit, ~] = isInvalidCandidateW(Winit, params.Pmax);
+        useWinit = ~invalidInit;
+    end
+    if useWinit
+        Wrefined = Winit;
+    else
+        Wrefined = buildCandidateWMRT(Hs, params.Pmax);
+    end
+    initialMetrics = Signal_model('evaluate', state, params, Wrefined, candidateUsers);
+    refinedMetrics = initialMetrics;
     numericalGuardTriggered = false;
     performedIter = 0;
     for iter = 1:maxIterShort
@@ -312,7 +370,30 @@ function [Wrefined, refinedMetrics, refineInfo] = refineCandidateWShort(state, p
         refinedMetrics = metricsNext;
         performedIter = iter;
     end
-    refineInfo = struct('shortIterations', performedIter, 'numericalGuardTriggered', numericalGuardTriggered);
+    refineInfo = struct( ...
+        'initialSumRateEstimate', initialMetrics.sumRate, ...
+        'finalSumRate', refinedMetrics.sumRate, ...
+        'improvementInsideRefine', refinedMetrics.sumRate - initialMetrics.sumRate, ...
+        'shortIterations', performedIter, ...
+        'numericalGuardTriggered', numericalGuardTriggered);
+end
+
+function Wmrt = buildCandidateWMRT(Hs, pmax)
+    numStreams = size(Hs, 1);
+    numAnt = size(Hs, 2);
+    Wmrt = zeros(numAnt, numStreams);
+    tinyNorm = 1e-12;
+    for k = 1:numStreams
+        hk = Hs(k, :).';
+        hkNorm = norm(hk);
+        if hkNorm > tinyNorm
+            Wmrt(:, k) = conj(hk) / hkNorm;
+        end
+    end
+    totalPower = real(trace(Wmrt * Wmrt'));
+    if isfinite(totalPower) && totalPower > 0
+        Wmrt = sqrt(pmax / totalPower) * Wmrt;
+    end
 end
 
 function u = wmmseUpdateReceivers(Hs, W, sigma2)
