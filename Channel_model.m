@@ -45,11 +45,11 @@ function [params, state, info] = initializeSystem()
 end
 
 function params = defaultParameters()
-    params.N = 2;
-    params.M = 4;
-    params.K = 8;
-    params.NRF = 2;
-    params.Kmax = 2;
+    params.N = 4;
+    params.M = 8;
+    params.K = 64;
+    params.NRF = 4;
+    params.Kmax = 4;
     params.KServ = min(params.NRF, params.Kmax);
 
     params.Dx = 10;
@@ -75,12 +75,12 @@ function params = defaultParameters()
     params.randomSeed = 20260321;
     params.symbolSeed = 20260322;
 
-    params.IW = 30;
+    params.IW = 40;
     params.wmmseTol = 1e-6;
     params.muBisectionTol = 1e-8;
     params.muBisectionMaxIter = 60;
 
-    params.Tmax = 12;
+    params.Tmax = 15;
     params.epsilonOuter = 1e-5;
 
     params.angleStepThetaInit = 0.20;
@@ -90,18 +90,20 @@ function params = defaultParameters()
     params.betaTheta = 0.5;
     params.betaPhi = 0.5;
     params.epsilonTheta = 1e-7;
+    params.angleAnchorUsers = 4;
+    params.angleReanchorFailureThreshold = 2;
 
     params.positionFiniteDiff = 1e-3;
     params.positionLineSearchInit = 1.0;
     params.positionLineSearchBeta = 0.5;
     params.positionLineSearchMin = 1e-4;
-    params.positionMemory = 5;
+    params.positionMemory = 7;
     params.epsilonX = 1e-7;
 
     params.TS = 2;
-    params.Lin = 1;
-    params.Lout = 2;
-    params.maxSwapPerUpdate = 3;
+    params.Lin = 2;
+    params.Lout = 4;
+    params.maxSwapPerUpdate = 4;
     params.epsilonS = 1e-7;
 end
 
