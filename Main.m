@@ -5,7 +5,30 @@ clear; clc;
 
 % 工程化增强：可在此处覆写默认参数（留空即使用默认）
 paramsOverride = struct();
-% paramsOverride.verbosity = 2;
+paramsOverride.verbosity = 1;
+
+% 更友好的场景强度
+paramsOverride.Pmax = 10;
+paramsOverride.sigma2 = 1e-6;
+paramsOverride.alphaW = 0.03;
+paramsOverride.alphaL = 0.985;
+
+% 更容易形成有效链路的用户分布
+paramsOverride.K = 24;
+paramsOverride.userGeneration = struct();
+paramsOverride.userGeneration.mode = 'clustered';
+paramsOverride.userGeneration.hotspotCenters = [3, 8; 7, 10];
+paramsOverride.userGeneration.hotspotStd = [0.8, 1.0];
+paramsOverride.userRegionY = [6, 12];
+
+% 降低并发多用户干扰，先做 sanity check
+paramsOverride.Kmax = 2;
+paramsOverride.KServ = 2;
+
+% 给 AO 和 WMMSE 多一点迭代空间
+paramsOverride.IW = 60;
+paramsOverride.Tmax = 20;
+paramsOverride.epsilonOuter = 1e-6;
 % paramsOverride.saveResults = true;
 % paramsOverride.savePath = 'results_demo.mat';
 
