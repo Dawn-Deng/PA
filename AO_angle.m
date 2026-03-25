@@ -9,6 +9,7 @@ function [state, info, memory] = AO_angle(state, params, memory)
     userSetChanged = isempty(memory.previousServiceSet) || ~isequal(memory.previousServiceSet, state.S);
     maxRounds = inferAngleRoundLimit(params);
     reanchorFailureThreshold = getReanchorFailureThreshold(params);
+    skipFailureThreshold = getSkipFailureThreshold(params);
 
     acceptedCount = 0;
     reanchorCount = 0;
@@ -30,6 +31,7 @@ function [state, info, memory] = AO_angle(state, params, memory)
             paAcceptedMoves = 0;
             paRounds = 0;
             failureBefore = memory.failureStreak(m, n);
+            shouldSkip = (~userSetChanged) && (memory.failureStreak(m, n) >= skipFailureThreshold);
             shouldReanchor = userSetChanged || memory.failureStreak(m, n) >= reanchorFailureThreshold;
 
             paTrace = struct();
@@ -46,6 +48,22 @@ function [state, info, memory] = AO_angle(state, params, memory)
                 'bestRoundRate', [], ...
                 'accepted', false, ...
                 'rejectReason', ''), 0, 1);
+
+            if shouldSkip
+                memory.failureStreak(m, n) = memory.failureStreak(m, n) + 1;
+                perPA(m, n).waveguideIndex = n;
+                perPA(m, n).paIndex = m;
+                perPA(m, n).reanchored = false;
+                perPA(m, n).acceptedMoves = 0;
+                perPA(m, n).rounds = 0;
+                perPA(m, n).finalTheta = state.theta(m, n);
+                perPA(m, n).finalPhi = state.phi(m, n);
+                perPA(m, n).finalSumRate = state.sumRate;
+                perPA(m, n).failureStreakBefore = failureBefore;
+                perPA(m, n).failureStreakAfter = memory.failureStreak(m, n);
+                perPA(m, n).trace = paTrace;
+                continue;
+            end
 
             if shouldReanchor
                 [anchorSet, anchorRate] = evaluateAnchorSet(state, params, m, n, buildAnchorSet(state, params, m, n));
@@ -144,8 +162,12 @@ function memory = initializeAngleMemory(params)
 end
 
 function maxRounds = inferAngleRoundLimit(params)
+    if isfield(params, 'angleMaxRounds') && ~isempty(params.angleMaxRounds)
+        maxRounds = max(1, round(params.angleMaxRounds));
+        return;
+    end
     if isfield(params, 'ITheta')
-        maxRounds = params.ITheta;
+        maxRounds = max(1, round(params.ITheta));
         return;
     end
 
@@ -167,7 +189,15 @@ function threshold = getReanchorFailureThreshold(params)
     if isfield(params, 'angleReanchorFailureThreshold')
         threshold = params.angleReanchorFailureThreshold;
     else
-        threshold = 2;
+        threshold = 4;
+    end
+end
+
+function threshold = getSkipFailureThreshold(params)
+    if isfield(params, 'angleSkipFailureThreshold')
+        threshold = params.angleSkipFailureThreshold;
+    else
+        threshold = 4;
     end
 end
 
@@ -194,14 +224,26 @@ function [bestState, bestRate, foundBetter, candidateAngles, candidateRates] = e
     bestState = state;
     bestRate = state.sumRate;
     foundBetter = false;
-    candidateAngles = zeros(size(directions, 1), 2);
-    candidateRates = zeros(size(directions, 1), 1);
 
-    for d = 1:size(directions, 1)
+    numDirections = size(directions, 1);
+    rawCandidates = zeros(numDirections, 2);
+    for d = 1:numDirections
         candidateTheta = centerTheta + directions(d, 1) * stepTheta;
         candidatePhi = centerPhi + directions(d, 2) * stepPhi;
         [candidateTheta, candidatePhi] = projectAngles(candidateTheta, candidatePhi);
-        candidateAngles(d, :) = [candidateTheta, candidatePhi];
+        rawCandidates(d, :) = [candidateTheta, candidatePhi];
+    end
+
+    dedupKey = round(rawCandidates, 12);
+    [~, uniqueIdx] = unique(dedupKey, 'rows', 'stable');
+    uniqueCandidates = rawCandidates(uniqueIdx, :);
+
+    candidateAngles = uniqueCandidates;
+    candidateRates = zeros(size(uniqueCandidates, 1), 1);
+
+    for d = 1:size(uniqueCandidates, 1)
+        candidateTheta = uniqueCandidates(d, 1);
+        candidatePhi = uniqueCandidates(d, 2);
 
         candidateState = setSinglePAAngle(state, params, m, n, candidateTheta, candidatePhi);
         candidateMetrics = Signal_model('evaluate', candidateState, params, state.W, state.S);
@@ -249,7 +291,7 @@ function representativeUsers = selectRepresentativeUsers(state, paPos, params)
     if isfield(params, 'angleAnchorUsers')
         maxUsers = params.angleAnchorUsers;
     else
-        maxUsers = 3;
+        maxUsers = 2;
     end
     representativeUsers = state.S(order(1:min(maxUsers, numel(order))));
 end
