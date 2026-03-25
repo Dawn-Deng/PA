@@ -32,9 +32,12 @@ function [state, info, memory] = AO_X(state, params, memory)
         xCurrent = state.X(:, n);
         fCurrent = state.sumRate;
         gradCurrent = numericalGradient(state, params, n, xCurrent);
-        direction = -lbfgsDirection(gradCurrent, memory{n});
+        direction = lbfgsDirection(gradCurrent, memory{n});
+        if gradCurrent' * direction <= 0
+            direction = gradCurrent;
+        end
         if norm(direction) <= 1e-12
-            direction = -gradCurrent;
+            direction = gradCurrent;
         end
 
         alpha = params.positionLineSearchInit;
