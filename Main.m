@@ -14,9 +14,9 @@ paramsOverride.alphaW = 0.03;
 paramsOverride.alphaL = 0.985;
 
 % 静态基线测试（中等规模）：NRF = N, KServ = NRF
-paramsOverride.N = 16;
+paramsOverride.N = 8;
 paramsOverride.M = 8;
-paramsOverride.K = 128;
+paramsOverride.K = 64;
 paramsOverride.NRF = 16;
 paramsOverride.Kmax = 16;
 paramsOverride.KServ = 16;
@@ -404,7 +404,8 @@ function xTable = buildXTraceTable(results)
         bestWaveguide, bestCoarseImprove, bestFinalImprove, dominantRejectReason);
 end
 
-function out = formatNumericVector(vec, fmt)
+function out = formatNumericV
+ector(vec, fmt)
     if nargin < 2 || isempty(fmt)
         fmt = '%g';
     end
