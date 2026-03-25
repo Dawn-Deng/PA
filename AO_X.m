@@ -11,6 +11,7 @@ function [state, info, memory] = AO_X(state, params, memory)
         'accepted', false, ...
         'rejectReason', '', ... % reject reason
         'lineSearchSteps', 0, ...
+        'lineSearchEarlyStoppedByProjectionCollapse', false, ...
         'alphaAccepted', [], ...
         'sumRateBefore', [], ...
         'sumRateAfter', [], ...
@@ -20,6 +21,8 @@ function [state, info, memory] = AO_X(state, params, memory)
         'bestCoarseRate', [], ...
         'bestFinalRate', [], ...
         'refinedUsed', false, ...
+        'shortRefineAttempted', false, ...
+        'shortRefineSkippedReason', '', ...
         'shortRefineIterations', 0, ...
         'numericalGuardTriggered', false, ...
         'projectionCollapsedCount', 0, ...
@@ -29,9 +32,12 @@ function [state, info, memory] = AO_X(state, params, memory)
         xCurrent = state.X(:, n);
         fCurrent = state.sumRate;
         gradCurrent = numericalGradient(state, params, n, xCurrent);
-        direction = -lbfgsDirection(gradCurrent, memory{n});
+        direction = lbfgsDirection(gradCurrent, memory{n});
+        if gradCurrent' * direction <= 0
+            direction = gradCurrent;
+        end
         if norm(direction) <= 1e-12
-            direction = -gradCurrent;
+            direction = gradCurrent;
         end
 
         alpha = params.positionLineSearchInit;
@@ -41,6 +47,7 @@ function [state, info, memory] = AO_X(state, params, memory)
         acceptedAlpha = [];
         rejectReason = 'noImprovement';
         projectionCollapsedCount = 0;
+        lineSearchEarlyStoppedByProjectionCollapse = false;
         lsTrace = repmat(struct( ...
             'alphaTrial', [], ...
             'xCandidate', [], ...
@@ -54,13 +61,28 @@ function [state, info, memory] = AO_X(state, params, memory)
             'rejectReason', '', ...
             'rejectReasonFinal', ''), 0, 1);
 
-        while alpha >= params.positionLineSearchMin
+        while alpha >= params.positionLineSearchMin && lineSearchSteps < params.positionLineSearchMaxSteps
             lineSearchSteps = lineSearchSteps + 1;
             xBar = xCurrent + alpha * direction;
             xCandidate = Channel_model('project_waveguide_positions', xBar, params);
             projectionDistance = norm(xCandidate - xCurrent);
-            if projectionDistance <= 1e-12
+            if projectionDistance <= params.positionProjectionCollapseTol
                 projectionCollapsedCount = projectionCollapsedCount + 1;
+                thisRejectReason = 'projectionCollapsedMove'; % reject reason
+                lsTrace(end + 1) = struct( ...
+                    'alphaTrial', alpha, ...
+                    'xCandidate', xCandidate, ...
+                    'candidateRate', -inf, ...
+                    'candidateRateCoarse', -inf, ...
+                    'projectionDistance', projectionDistance, ...
+                    'isBestCoarseCandidate', false, ...
+                    'refinedUsed', false, ...
+                    'candidateRateFinal', [], ...
+                    'accepted', false, ...
+                    'rejectReason', thisRejectReason, ...
+                    'rejectReasonFinal', thisRejectReason); %#ok<AGROW>
+                lineSearchEarlyStoppedByProjectionCollapse = true;
+                break;
             end
 
             candidateState = state;
@@ -72,8 +94,6 @@ function [state, info, memory] = AO_X(state, params, memory)
             thisRejectReason = '';
             if ~isfinite(coarseRate)
                 thisRejectReason = 'invalidCoarseMetrics';
-            elseif projectionDistance <= 1e-12
-                thisRejectReason = 'projectionCollapsedMove'; % reject reason
             elseif coarseRate < fCurrent + params.epsilonX
                 thisRejectReason = 'belowTolerance'; % reject reason
             end
@@ -96,10 +116,12 @@ function [state, info, memory] = AO_X(state, params, memory)
 
         coarseRates = [lsTrace.candidateRateCoarse];
         projectionDistances = [lsTrace.projectionDistance];
-        validMask = isfinite(coarseRates) & (projectionDistances > 1e-12);
+        validMask = isfinite(coarseRates) & (projectionDistances > params.positionProjectionCollapseTol);
         bestCoarseIndex = [];
         bestCoarseRate = -inf;
         bestFinalRate = -inf;
+        shortRefineAttempted = false;
+        shortRefineSkippedReason = '';
         refinedUsed = false;
         shortRefineIterations = 0;
         refineGuardTriggered = false;
@@ -110,41 +132,68 @@ function [state, info, memory] = AO_X(state, params, memory)
             bestCoarseIndex = validIdx(relIdx);
             lsTrace(bestCoarseIndex).isBestCoarseCandidate = true;
 
-            candidateStateRefine = state;
-            candidateStateRefine.X(:, n) = lsTrace(bestCoarseIndex).xCandidate;
-            candidateStateRefine = Channel_model('update_state', candidateStateRefine, params);
-            maxIterShort = 3;
-            [Wrefined, refinedMetrics, refineInfo] = refinePositionCandidateWShort( ...
-                candidateStateRefine, params, state.W, maxIterShort);
+            candidateStateCoarse = state;
+            candidateStateCoarse.X(:, n) = lsTrace(bestCoarseIndex).xCandidate;
+            candidateStateCoarse = Channel_model('update_state', candidateStateCoarse, params);
+            coarseMetricsBest = Signal_model('evaluate', candidateStateCoarse, params, state.W, state.S);
 
-            refinedUsed = true;
-            shortRefineIterations = refineInfo.shortIterations;
-            refineGuardTriggered = refineInfo.numericalGuardTriggered;
-            bestFinalRate = refinedMetrics.sumRate;
-
-            lsTrace(bestCoarseIndex).refinedUsed = true;
-            lsTrace(bestCoarseIndex).candidateRateFinal = refinedMetrics.sumRate;
-
-            if refineInfo.numericalGuardTriggered
-                rejectReason = 'numericalGuardTriggered';
-                lsTrace(bestCoarseIndex).rejectReasonFinal = 'numericalGuardTriggered';
-            elseif refinedMetrics.sumRate >= fCurrent + params.epsilonX
-                candidateStateRefine.W = Wrefined;
-                candidateStateRefine.sinr = refinedMetrics.sinr;
-                candidateStateRefine.rate = refinedMetrics.rate;
-                candidateStateRefine.sumRate = refinedMetrics.sumRate;
-                candidateStateBest = candidateStateRefine;
+            if coarseMetricsBest.sumRate >= fCurrent + params.epsilonX
+                candidateStateCoarse.sinr = coarseMetricsBest.sinr;
+                candidateStateCoarse.rate = coarseMetricsBest.rate;
+                candidateStateCoarse.sumRate = coarseMetricsBest.sumRate;
+                candidateStateBest = candidateStateCoarse;
                 accepted = true;
                 acceptedAlpha = lsTrace(bestCoarseIndex).alphaTrial;
+                bestFinalRate = coarseMetricsBest.sumRate;
                 rejectReason = '';
                 lsTrace(bestCoarseIndex).accepted = true;
                 lsTrace(bestCoarseIndex).rejectReasonFinal = '';
             else
-                rejectReason = 'refinedBelowTolerance';
-                lsTrace(bestCoarseIndex).rejectReasonFinal = 'refinedBelowTolerance';
+                rejectReason = 'belowTolerance';
+                lsTrace(bestCoarseIndex).rejectReasonFinal = 'belowTolerance';
+            end
+
+            projectionDistanceBest = lsTrace(bestCoarseIndex).projectionDistance;
+            shouldRefine = bestCoarseRate >= fCurrent + params.epsilonX + params.positionRefineMargin && ...
+                projectionDistanceBest >= params.positionRefineMinMove;
+            if shouldRefine
+                shortRefineAttempted = true;
+                maxIterShort = 3;
+                [Wrefined, refinedMetrics, refineInfo] = refinePositionCandidateWShort( ...
+                    candidateStateCoarse, params, state.W, maxIterShort);
+
+                refinedUsed = true;
+                shortRefineIterations = refineInfo.shortIterations;
+                refineGuardTriggered = refineInfo.numericalGuardTriggered;
+                lsTrace(bestCoarseIndex).refinedUsed = true;
+                lsTrace(bestCoarseIndex).candidateRateFinal = refinedMetrics.sumRate;
+
+                if ~refineInfo.numericalGuardTriggered && isfinite(refinedMetrics.sumRate) && refinedMetrics.sumRate > bestFinalRate
+                    candidateStateCoarse.W = Wrefined;
+                    candidateStateCoarse.sinr = refinedMetrics.sinr;
+                    candidateStateCoarse.rate = refinedMetrics.rate;
+                    candidateStateCoarse.sumRate = refinedMetrics.sumRate;
+                    candidateStateBest = candidateStateCoarse;
+                    bestFinalRate = refinedMetrics.sumRate;
+                    if bestFinalRate >= fCurrent + params.epsilonX
+                        accepted = true;
+                        acceptedAlpha = lsTrace(bestCoarseIndex).alphaTrial;
+                        rejectReason = '';
+                        lsTrace(bestCoarseIndex).accepted = true;
+                        lsTrace(bestCoarseIndex).rejectReasonFinal = '';
+                    end
+                end
+            else
+                if bestCoarseRate < fCurrent + params.epsilonX + params.positionRefineMargin
+                    shortRefineSkippedReason = 'insufficientMargin';
+                elseif projectionDistanceBest < params.positionRefineMinMove
+                    shortRefineSkippedReason = 'moveTooSmall';
+                else
+                    shortRefineSkippedReason = 'notTriggered';
+                end
             end
         else
-            if ~isempty(lsTrace) && all(projectionDistances <= 1e-12)
+            if ~isempty(lsTrace) && all(projectionDistances <= params.positionProjectionCollapseTol)
                 rejectReason = 'projectionCollapsedMove';
             else
                 rejectReason = 'stepTooSmall';
@@ -163,6 +212,7 @@ function [state, info, memory] = AO_X(state, params, memory)
         waveguideInfo(n).accepted = accepted;
         waveguideInfo(n).rejectReason = rejectReason;
         waveguideInfo(n).lineSearchSteps = lineSearchSteps;
+        waveguideInfo(n).lineSearchEarlyStoppedByProjectionCollapse = lineSearchEarlyStoppedByProjectionCollapse;
         waveguideInfo(n).alphaAccepted = acceptedAlpha;
         waveguideInfo(n).sumRateBefore = fCurrent;
         waveguideInfo(n).sumRateAfter = state.sumRate;
@@ -172,6 +222,8 @@ function [state, info, memory] = AO_X(state, params, memory)
         waveguideInfo(n).bestCoarseRate = bestCoarseRate;
         waveguideInfo(n).bestFinalRate = bestFinalRate;
         waveguideInfo(n).refinedUsed = refinedUsed;
+        waveguideInfo(n).shortRefineAttempted = shortRefineAttempted;
+        waveguideInfo(n).shortRefineSkippedReason = shortRefineSkippedReason;
         waveguideInfo(n).shortRefineIterations = shortRefineIterations;
         waveguideInfo(n).numericalGuardTriggered = refineGuardTriggered;
         waveguideInfo(n).projectionCollapsedCount = projectionCollapsedCount;

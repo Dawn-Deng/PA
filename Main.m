@@ -13,22 +13,13 @@ paramsOverride.sigma2 = 1e-6;
 paramsOverride.alphaW = 0.03;
 paramsOverride.alphaL = 0.985;
 
-% 静态基线测试（中等规模）：NRF = N, KServ = NRF
-paramsOverride.N = 16;
-paramsOverride.M = 8;
-paramsOverride.K = 128;
-paramsOverride.NRF = 16;
-paramsOverride.Kmax = 16;
-paramsOverride.KServ = 16;
-% 若 N 增大而 Dx 不变，波导会更密集（当前保持默认 Dx 不变）
-
-% 备选更大规模（按需打开）
-% paramsOverride.N = 32;
-% paramsOverride.M = 8;
-% paramsOverride.K = 256;
-% paramsOverride.NRF = 32;
-% paramsOverride.Kmax = 32;
-% paramsOverride.KServ = 32;
+% 静态候选池快速调试配置（中等规模）：NRF = N, KServ = NRF = N
+paramsOverride.N = 8;
+paramsOverride.M = 6;
+paramsOverride.K = 64;
+paramsOverride.NRF = paramsOverride.N;
+paramsOverride.Kmax = paramsOverride.N;
+paramsOverride.KServ = paramsOverride.N;
 
 % 保持 clustered 用户分布
 paramsOverride.userGeneration = struct();

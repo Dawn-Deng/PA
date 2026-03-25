@@ -113,18 +113,24 @@ function params = defaultParameters()
 
     params.angleStepThetaInit = 0.20;
     params.angleStepPhiInit = 0.20;
-    params.angleStepThetaMin = 1e-3;
-    params.angleStepPhiMin = 1e-3;
+    params.angleStepThetaMin = 2e-3;
+    params.angleStepPhiMin = 2e-3;
     params.betaTheta = 0.5;
     params.betaPhi = 0.5;
-    params.epsilonTheta = 1e-7;
-    params.angleAnchorUsers = 4;
-    params.angleReanchorFailureThreshold = 2;
+    params.epsilonTheta = 1e-6;
+    params.angleAnchorUsers = 2;
+    params.angleReanchorFailureThreshold = 4;
+    params.angleMaxRounds = 6;
+    params.angleSkipFailureThreshold = 4;
 
     params.positionFiniteDiff = 1e-3;
     params.positionLineSearchInit = 1.0;
     params.positionLineSearchBeta = 0.5;
     params.positionLineSearchMin = 1e-4;
+    params.positionLineSearchMaxSteps = 8;
+    params.positionProjectionCollapseTol = 1e-10;
+    params.positionRefineMargin = 1e-4;
+    params.positionRefineMinMove = 1e-3;
     params.positionMemory = 7;
     params.epsilonX = 1e-7;
 
