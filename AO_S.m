@@ -181,14 +181,13 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     end
     currentScore = -inf(params.K, 1);
 
-    externalAll = setdiff(1:params.K, state.S, 'stable');
+    externalAll = setdiff(state.candidatePool, state.S, 'stable');
     maxExternal = numel(externalAll);
     if maxExternal <= 0
         dynamicCandidatePool = [];
         return;
     end
-    targetSize = min(max(12, 4 * params.KServ), maxExternal);
-    topPerWeak = min(6, maxExternal);
+    targetSize = maxExternal;
 
     if isempty(weakUserPositions) || isempty(weakUsers)
         currentScore(externalAll) = baseScore(externalAll);
@@ -233,27 +232,8 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         end
     end
 
-    candidateUnion = [];
-    for weakIdx = 1:numWeak
-        deltas = proxyDeltaMatrix(weakIdx, :);
-        [~, weakOrder] = sort(deltas, 'descend');
-        validWeakOrder = weakOrder(isfinite(deltas(weakOrder)));
-        if isempty(validWeakOrder)
-            continue;
-        end
-        takeCount = min(topPerWeak, numel(validWeakOrder));
-        candidateUnion = [candidateUnion, externalAll(validWeakOrder(1:takeCount))]; %#ok<AGROW>
-    end
-    candidateUnion = unique(candidateUnion, 'stable');
-
-    if isempty(candidateUnion)
-        [~, order] = sort(currentScore(externalAll), 'descend');
-        dynamicCandidatePool = externalAll(order(1:targetSize));
-    else
-        [~, order] = sort(currentScore(candidateUnion), 'descend');
-        candidateUnion = candidateUnion(order);
-        dynamicCandidatePool = candidateUnion(1:min(targetSize, numel(candidateUnion)));
-    end
+    [~, order] = sort(currentScore(externalAll), 'descend');
+    dynamicCandidatePool = externalAll(order(1:targetSize));
 
     if any(fallbackMask(externalAll))
         if ~any(isfinite(proxyDeltaMatrix(:)))

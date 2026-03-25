@@ -13,17 +13,29 @@ paramsOverride.sigma2 = 1e-6;
 paramsOverride.alphaW = 0.03;
 paramsOverride.alphaL = 0.985;
 
-% 更容易形成有效链路的用户分布
-paramsOverride.K = 24;
+% 静态基线测试（中等规模）：NRF = N, KServ = NRF
+paramsOverride.N = 16;
+paramsOverride.M = 8;
+paramsOverride.K = 128;
+paramsOverride.NRF = 16;
+paramsOverride.Kmax = 16;
+paramsOverride.KServ = 16;
+% 若 N 增大而 Dx 不变，波导会更密集（当前保持默认 Dx 不变）
+
+% 备选更大规模（按需打开）
+% paramsOverride.N = 32;
+% paramsOverride.M = 8;
+% paramsOverride.K = 256;
+% paramsOverride.NRF = 32;
+% paramsOverride.Kmax = 32;
+% paramsOverride.KServ = 32;
+
+% 保持 clustered 用户分布
 paramsOverride.userGeneration = struct();
 paramsOverride.userGeneration.mode = 'clustered';
 paramsOverride.userGeneration.hotspotCenters = [3, 8; 7, 10];
 paramsOverride.userGeneration.hotspotStd = [0.8, 1.0];
 paramsOverride.userRegionY = [6, 12];
-
-% 降低并发多用户干扰，先做 sanity check
-paramsOverride.Kmax = 2;
-paramsOverride.KServ = 2;
 
 % 给 AO 和 WMMSE 多一点迭代空间
 paramsOverride.IW = 60;
