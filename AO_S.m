@@ -167,116 +167,51 @@ function [weakUserPositions, weakUsers] = selectWeakUsers(state, params)
 end
 
 function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUser, scoreTypeDetail] = ...
-    buildDynamicCandidatePool(state, params, weakUserPositions, weakUsers)
-    scoreType = 'multiWeakSwapProxyMax';
-    scoreTypeDetail = 'max proxyDelta across current weak users';
+    buildDynamicCandidatePool(state, params, ~, weakUsers)
+    scoreType = 'staticCandidatePoolScore';
+    scoreTypeDetail = 'static ranking in candidatePool only';
     weakAnchorUser = [];
     if ~isempty(weakUsers)
         weakAnchorUser = weakUsers(1);
     end
 
     baseScore = zeros(params.K, 1);
-    if isfield(state, 'channelMatrix') && ~isempty(state.channelMatrix)
+    if isfield(state, 'Emax') && ~isempty(state.Emax)
+        baseScore = state.Emax(:);
+    elseif isfield(state, 'channelMatrix') && ~isempty(state.channelMatrix)
         baseScore = vecnorm(state.channelMatrix, 2, 2);
     end
-    currentScore = -inf(params.K, 1);
 
-    externalAll = setdiff(state.candidatePool, state.S, 'stable');
-    maxExternal = numel(externalAll);
-    if maxExternal <= 0
+    currentScore = -inf(params.K, 1);
+    if isempty(state.candidatePool)
         dynamicCandidatePool = [];
         return;
     end
-    targetSize = maxExternal;
 
-    if isempty(weakUserPositions) || isempty(weakUsers)
-        currentScore(externalAll) = baseScore(externalAll);
-        scoreType = 'channelNormFallback';
-        scoreTypeDetail = 'fallback to baseScore: missing weak users';
-        [~, order] = sort(currentScore(externalAll), 'descend');
-        dynamicCandidatePool = externalAll(order(1:targetSize));
+    pool = state.candidatePool(:).';
+    currentScore(pool) = baseScore(pool);
+
+    externalAll = setdiff(pool, state.S, 'stable');
+    if isempty(externalAll)
+        dynamicCandidatePool = [];
         return;
-    end
-
-    numWeak = numel(weakUsers);
-    proxyDeltaMatrix = nan(numWeak, maxExternal);
-    for weakIdx = 1:numWeak
-        weakPos = weakUserPositions(weakIdx);
-        for extIdx = 1:maxExternal
-            userK = externalAll(extIdx);
-            candidateUsers = state.S;
-            candidateUsers(weakPos) = userK;
-            Wcandidate = buildCandidateWCoarse(state, params, candidateUsers);
-            coarseMetrics = Signal_model('evaluate', state, params, Wcandidate, candidateUsers);
-            proxyDelta = coarseMetrics.sumRate - state.sumRate;
-            if isfinite(proxyDelta)
-                proxyDeltaMatrix(weakIdx, extIdx) = proxyDelta;
-            end
-        end
-    end
-
-    fallbackMask = false(params.K, 1);
-    for extIdx = 1:maxExternal
-        userK = externalAll(extIdx);
-        deltas = proxyDeltaMatrix(:, extIdx);
-        validMask = isfinite(deltas);
-        if any(validMask)
-            currentScore(userK) = max(deltas(validMask));
-        else
-            fallbackMask(userK) = true;
-            if isfinite(baseScore(userK))
-                currentScore(userK) = baseScore(userK);
-            else
-                currentScore(userK) = -inf;
-            end
-        end
     end
 
     [~, order] = sort(currentScore(externalAll), 'descend');
-    dynamicCandidatePool = externalAll(order(1:targetSize));
-
-    if any(fallbackMask(externalAll))
-        if ~any(isfinite(proxyDeltaMatrix(:)))
-            scoreType = 'channelNormFallback';
-            scoreTypeDetail = 'fallback to baseScore: all proxy deltas invalid';
-        else
-            scoreTypeDetail = [scoreTypeDetail, ' (partial baseScore fallback on invalid proxy)'];
-        end
-    end
+    dynamicCandidatePool = externalAll(order);
 end
 
-function [bestWeakForPoolHead, proxyMatrixHead] = computePoolHeadDiagnostics(state, params, weakUserPositions, weakUsers, poolHead, baseScore)
+function [bestWeakForPoolHead, proxyMatrixHead] = computePoolHeadDiagnostics(~, ~, ~, weakUsers, poolHead, ~)
     bestWeakForPoolHead = [];
     proxyMatrixHead = [];
-    if isempty(poolHead) || isempty(weakUsers) || isempty(weakUserPositions)
+    if isempty(poolHead)
         return;
     end
 
-    numWeak = numel(weakUsers);
-    numPool = numel(poolHead);
-    proxyMatrixHead = nan(numWeak, numPool);
-    bestWeakForPoolHead = nan(1, numPool);
-    for poolIdx = 1:numPool
-        userK = poolHead(poolIdx);
-        for weakIdx = 1:numWeak
-            candidateUsers = state.S;
-            candidateUsers(weakUserPositions(weakIdx)) = userK;
-            Wcandidate = buildCandidateWCoarse(state, params, candidateUsers);
-            coarseMetrics = Signal_model('evaluate', state, params, Wcandidate, candidateUsers);
-            proxyDelta = coarseMetrics.sumRate - state.sumRate;
-            if isfinite(proxyDelta)
-                proxyMatrixHead(weakIdx, poolIdx) = proxyDelta;
-            end
-        end
-        deltas = proxyMatrixHead(:, poolIdx);
-        validMask = isfinite(deltas);
-        if any(validMask)
-            validIndices = find(validMask);
-            [~, localIdx] = max(deltas(validMask));
-            bestWeakForPoolHead(poolIdx) = weakUsers(validIndices(localIdx));
-        elseif isfinite(baseScore(userK)) && ~isempty(weakUsers)
-            bestWeakForPoolHead(poolIdx) = weakUsers(1);
-        end
+    if ~isempty(weakUsers)
+        bestWeakForPoolHead = repmat(weakUsers(1), 1, numel(poolHead));
+    else
+        bestWeakForPoolHead = nan(1, numel(poolHead));
     end
 end
 
