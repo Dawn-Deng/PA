@@ -197,7 +197,7 @@ function threshold = getSkipFailureThreshold(params)
     if isfield(params, 'angleSkipFailureThreshold')
         threshold = params.angleSkipFailureThreshold;
     else
-        threshold = 3;
+        threshold = 4;
     end
 end
 
