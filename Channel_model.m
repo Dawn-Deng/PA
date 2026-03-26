@@ -127,10 +127,11 @@ function params = defaultParameters()
     params.positionLineSearchInit = 1.0;
     params.positionLineSearchBeta = 0.5;
     params.positionLineSearchMin = 1e-4;
-    params.positionLineSearchMaxSteps = 8;
+    params.positionLineSearchMaxSteps = 20;
     params.positionProjectionCollapseTol = 1e-10;
     params.positionRefineMargin = 1e-4;
     params.positionRefineMinMove = 1e-3;
+    params.positionEnableShortRefine = false;
     params.positionMemory = 7;
     params.epsilonX = 1e-7;
 
