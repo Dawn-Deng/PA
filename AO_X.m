@@ -47,7 +47,7 @@ function [state, info, memory] = AO_X(state, params, memory)
 
     for n = 1:params.N
         xCurrent = state.X(:, n);
-        currentConstraintDiag = computeConstraintDiagnostics(xCurrent, params);
+        currentConstraintDiag = computeXConstraintDiagnostics(xCurrent, params);
         fCurrent = state.sumRate;
         gradCurrent = numericalGradient(state, params, n, xCurrent);
         gradNorm = norm(gradCurrent);
@@ -120,7 +120,7 @@ function [state, info, memory] = AO_X(state, params, memory)
             xCandidate = Channel_model('project_waveguide_positions', xBar, params);
             projectionDistance = norm(xCandidate - xCurrent);
             projectionCorrection = norm(xCandidate - xBar);
-            constraintDiag = computeConstraintDiagnostics(xCandidate, params);
+            constraintDiag = computeXConstraintDiagnostics(xCandidate, params);
             if projectionDistance <= params.positionProjectionCollapseTol
                 projectionCollapsedCount = projectionCollapsedCount + 1;
                 thisRejectReason = 'projectionCollapsedMove'; % reject reason
@@ -325,7 +325,7 @@ function memory = initializePositionMemory(params)
     end
 end
 
-function diag = computeConstraintDiagnostics(x, params)
+function diag = computeXConstraintDiagnostics(x, params)
     spacingMargin = diff(x) - params.deltaMin;
     minSpacingMargin = inf;
     if ~isempty(spacingMargin)
@@ -406,27 +406,6 @@ function [directionClean, info] = cleanupDirectionToFeasibleCone(xCurrent, direc
         'cleanupApplied', boundaryClipCount > 0 || spacingClipCount > 0, ...
         'boundaryOutwardComponentsClipped', boundaryClipCount, ...
         'spacingConflictPairsClipped', spacingClipCount);
-end
-
-function diag = computeConstraintDiagnostics(x, params)
-    spacingMargin = diff(x) - params.deltaMin;
-    minSpacingMargin = inf;
-    if ~isempty(spacingMargin)
-        minSpacingMargin = min(spacingMargin);
-    end
-
-    minLower = min(x);
-    minUpper = min(params.Dy - x);
-    activeTol = 1e-6;
-    if isfield(params, 'positionActiveConstraintTol') && ~isempty(params.positionActiveConstraintTol)
-        activeTol = params.positionActiveConstraintTol;
-    end
-    diag = struct( ...
-        'minDistToLowerBoundary', minLower, ...
-        'minDistToUpperBoundary', minUpper, ...
-        'minSpacingMargin', minSpacingMargin, ...
-        'activeBoundaryConstraint', (minLower <= activeTol) || (minUpper <= activeTol), ...
-        'activeSpacingConstraint', minSpacingMargin <= activeTol);
 end
 
 function grad = numericalGradient(state, params, n, x)
