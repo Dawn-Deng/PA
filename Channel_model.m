@@ -149,6 +149,24 @@ function params = defaultParameters()
     params.Lout = 4;
     params.maxSwapPerUpdate = 4;
     params.epsilonS = 1e-7;
+    params.userSetUseDynamicMixedScore = true;
+    params.userSetDynamicScoreWeights = [0.40, 0.30, 0.20, 0.10];
+    params.userSetTopKRefine = 4;
+    params.userSetTopKRefineExpandPerLevel = 2;
+    params.userSetShortRefineIter = 8;
+    params.userSetStagnationWindow = 2;
+    params.userSetMaxIntensificationLevel = 2;
+    params.userSetExpandLinPerLevel = 1;
+    params.userSetExpandLoutPerLevel = 2;
+    params.userSetTabuLength = 3;
+    params.userSetFailureToTabuThreshold = 2;
+    params.userSetRepeatFailurePenalty = 0.15;
+    params.userSetDiversificationJitter = 0.05;
+    params.userSetEnableLimitedTwoSwap = true;
+    params.userSetTwoSwapTriggerLevel = 2;
+    params.userSetTwoSwapTopK = 3;
+    params.userSetPostAcceptShortRefine = true;
+    params.userSetPostAcceptShortRefineIter = 2;
 
     % 工程化增强：日志与结果导出配置
     params.verbosity = 1;
