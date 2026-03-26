@@ -147,6 +147,10 @@ function printSummaryAndTrace(results, verbosity)
                 xDiag.acceptedCount, xDiag.totalLineSearchSteps, xDiag.projectionCollapsedCount, ...
                 xDiag.activeBoundaryCount, xDiag.activeSpacingCount, xDiag.bestWaveguide, xDiag.bestAlpha, ...
                 xDiag.bestCoarseImprove, xDiag.bestFinalImprove, xDiag.dominantRejectReason);
+            fprintf('  Xdet: gN=%.2e gDotD=%.2e rawDN=%.2e dirN=%.2e bClip=%d sClip=%d warm=%d aInit=%.2e aEma=%.2e projCorr=%.2e\n', ...
+                xDiag.meanGradNorm, xDiag.meanGradDotDirection, xDiag.meanRawDirectionNorm, xDiag.meanDirectionNorm, ...
+                xDiag.boundaryCleanupCount, xDiag.spacingCleanupCount, xDiag.warmStartUsedCount, ...
+                xDiag.meanAlphaInit, xDiag.meanAlphaEma, xDiag.meanProjectionCorrection);
         end
     end
 
@@ -276,6 +280,16 @@ function xDiag = summarizeXBlock(blockHistoryEntry)
         'projectionCollapsedCount', 0, ...
         'activeBoundaryCount', 0, ...
         'activeSpacingCount', 0, ...
+        'meanGradNorm', NaN, ...
+        'meanGradDotDirection', NaN, ...
+        'meanRawDirectionNorm', NaN, ...
+        'meanDirectionNorm', NaN, ...
+        'boundaryCleanupCount', 0, ...
+        'spacingCleanupCount', 0, ...
+        'warmStartUsedCount', 0, ...
+        'meanAlphaInit', NaN, ...
+        'meanAlphaEma', NaN, ...
+        'meanProjectionCorrection', NaN, ...
         'bestWaveguide', NaN, ...
         'bestAlpha', NaN, ...
         'bestCoarseImprove', NaN, ...
@@ -302,6 +316,48 @@ function xDiag = summarizeXBlock(blockHistoryEntry)
     end
     if isfield(wg, 'activeSpacingConstraint')
         xDiag.activeSpacingCount = sum([wg.activeSpacingConstraint]);
+    end
+    if isfield(wg, 'gradNorm')
+        vals = [wg.gradNorm];
+        xDiag.meanGradNorm = mean(vals(isfinite(vals)));
+    end
+    if isfield(wg, 'gradDotDirection')
+        vals = [wg.gradDotDirection];
+        xDiag.meanGradDotDirection = mean(vals(isfinite(vals)));
+    end
+    if isfield(wg, 'rawDirectionNorm')
+        vals = [wg.rawDirectionNorm];
+        xDiag.meanRawDirectionNorm = mean(vals(isfinite(vals)));
+    end
+    if isfield(wg, 'directionNorm')
+        vals = [wg.directionNorm];
+        xDiag.meanDirectionNorm = mean(vals(isfinite(vals)));
+    end
+    if isfield(wg, 'boundaryOutwardComponentsClipped')
+        xDiag.boundaryCleanupCount = sum([wg.boundaryOutwardComponentsClipped]);
+    end
+    if isfield(wg, 'spacingConflictPairsClipped')
+        xDiag.spacingCleanupCount = sum([wg.spacingConflictPairsClipped]);
+    end
+    if isfield(wg, 'alphaWarmStartUsed')
+        xDiag.warmStartUsedCount = sum([wg.alphaWarmStartUsed]);
+    end
+    if isfield(wg, 'alphaInit')
+        vals = [wg.alphaInit];
+        xDiag.meanAlphaInit = mean(vals(isfinite(vals)));
+    end
+    if isfield(wg, 'alphaHistoryEma')
+        vals = [wg.alphaHistoryEma];
+        xDiag.meanAlphaEma = mean(vals(isfinite(vals)));
+    end
+    projCorr = [];
+    for i = 1:numel(wg)
+        if isfield(wg(i), 'lineSearchTrace') && ~isempty(wg(i).lineSearchTrace) && isfield(wg(i).lineSearchTrace, 'projectionCorrection')
+            projCorr = [projCorr, [wg(i).lineSearchTrace.projectionCorrection]]; %#ok<AGROW>
+        end
+    end
+    if any(isfinite(projCorr))
+        xDiag.meanProjectionCorrection = mean(projCorr(isfinite(projCorr)));
     end
 
     coarseImprove = [wg.bestCoarseRate] - [wg.sumRateBefore];
@@ -391,6 +447,16 @@ function xTable = buildXTraceTable(results)
     projectionCollapsedCount = zeros(nIter, 1);
     activeBoundaryCount = zeros(nIter, 1);
     activeSpacingCount = zeros(nIter, 1);
+    meanGradNorm = nan(nIter, 1);
+    meanGradDotDirection = nan(nIter, 1);
+    meanRawDirectionNorm = nan(nIter, 1);
+    meanDirectionNorm = nan(nIter, 1);
+    boundaryCleanupCount = zeros(nIter, 1);
+    spacingCleanupCount = zeros(nIter, 1);
+    warmStartUsedCount = zeros(nIter, 1);
+    meanAlphaInit = nan(nIter, 1);
+    meanAlphaEma = nan(nIter, 1);
+    meanProjectionCorrection = nan(nIter, 1);
     bestWaveguide = nan(nIter, 1);
     bestAlpha = nan(nIter, 1);
     bestCoarseImprove = nan(nIter, 1);
@@ -404,6 +470,16 @@ function xTable = buildXTraceTable(results)
         projectionCollapsedCount(t) = xDiag.projectionCollapsedCount;
         activeBoundaryCount(t) = xDiag.activeBoundaryCount;
         activeSpacingCount(t) = xDiag.activeSpacingCount;
+        meanGradNorm(t) = xDiag.meanGradNorm;
+        meanGradDotDirection(t) = xDiag.meanGradDotDirection;
+        meanRawDirectionNorm(t) = xDiag.meanRawDirectionNorm;
+        meanDirectionNorm(t) = xDiag.meanDirectionNorm;
+        boundaryCleanupCount(t) = xDiag.boundaryCleanupCount;
+        spacingCleanupCount(t) = xDiag.spacingCleanupCount;
+        warmStartUsedCount(t) = xDiag.warmStartUsedCount;
+        meanAlphaInit(t) = xDiag.meanAlphaInit;
+        meanAlphaEma(t) = xDiag.meanAlphaEma;
+        meanProjectionCorrection(t) = xDiag.meanProjectionCorrection;
         bestWaveguide(t) = xDiag.bestWaveguide;
         bestAlpha(t) = xDiag.bestAlpha;
         bestCoarseImprove(t) = xDiag.bestCoarseImprove;
@@ -411,7 +487,10 @@ function xTable = buildXTraceTable(results)
         dominantRejectReason(t) = string(xDiag.dominantRejectReason);
     end
     xTable = table(iter, acceptedCount, totalLineSearchSteps, projectionCollapsedCount, ...
-        activeBoundaryCount, activeSpacingCount, bestWaveguide, bestAlpha, ...
+        activeBoundaryCount, activeSpacingCount, meanGradNorm, meanGradDotDirection, ...
+        meanRawDirectionNorm, meanDirectionNorm, boundaryCleanupCount, spacingCleanupCount, ...
+        warmStartUsedCount, meanAlphaInit, meanAlphaEma, meanProjectionCorrection, ...
+        bestWaveguide, bestAlpha, ...
         bestCoarseImprove, bestFinalImprove, dominantRejectReason);
 end
 
