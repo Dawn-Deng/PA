@@ -140,8 +140,11 @@ function printSummaryAndTrace(results, verbosity)
                 sDiag.triggered, sDiag.evaluatedPairs, sDiag.refinedPairs, sDiag.positiveCoarse, ...
                 sDiag.positiveFinal, sDiag.aboveEpsilonS, sDiag.bestDeltaCoarse, sDiag.bestDeltaFinal, ...
                 sDiag.bestMargin, sDiag.bestWeakUser, sDiag.bestStrongUser, sDiag.breakReason);
-            fprintf('  Sdet: weak=%s strong=%s pool=%s scores=%s\n', ...
-                sDiag.weakUserSetStr, sDiag.strongUserSetStr, sDiag.dynamicCandidatePoolHeadStr, sDiag.strongExternalScoresStr);
+            fprintf('  Sdet: weak=%s strong=%s pool=%s base=%s dyn=%s mode=%s stag=%d intens=%d twoSwap=%d/%d postRef=%d(+%.2e)\n', ...
+                sDiag.weakUserSetStr, sDiag.strongUserSetStr, sDiag.dynamicCandidatePoolHeadStr, ...
+                sDiag.strongExternalScoresStr, sDiag.dynamicScoreHeadStr, sDiag.scoreMode, ...
+                sDiag.stagnationLevel, sDiag.intensificationTriggered, sDiag.limitedTwoSwapTried, ...
+                sDiag.limitedTwoSwapAccepted, sDiag.postAcceptShortRefineTriggered, sDiag.postAcceptGain);
             xDiag = summarizeXBlock(bh);
             fprintf('  X: acc=%d ls=%d projCollapse=%d actB=%d actGap=%d bestWG=%d bestAlpha=%.2e bestCoarse=%.2e bestFinal=%.2e rejectMain=%s\n', ...
                 xDiag.acceptedCount, xDiag.totalLineSearchSteps, xDiag.projectionCollapsedCount, ...
@@ -192,6 +195,18 @@ function sDiag = summarizeSBlock(blockHistoryEntry, params)
         'strongUserSetStr', '[]', ...
         'dynamicCandidatePoolHeadStr', '[]', ...
         'strongExternalScoresStr', '[]', ...
+        'scoreMode', 'NA', ...
+        'dynamicScoreHeadStr', '[]', ...
+        'topRefineCoarseRanksStr', '[]', ...
+        'topRefineFinalRanksStr', '[]', ...
+        'stagnationLevel', 0, ...
+        'intensificationTriggered', 0, ...
+        'limitedTwoSwapTried', 0, ...
+        'limitedTwoSwapAccepted', 0, ...
+        'postAcceptShortRefineTriggered', 0, ...
+        'postAcceptGain', 0, ...
+        'tabuHeadPairsStr', '[]', ...
+        'penaltyHeadPairsStr', '[]', ...
         'acceptedSwaps', 0, ...
         'breakReason', 'NA');
 
@@ -270,6 +285,42 @@ function sDiag = summarizeSBlock(blockHistoryEntry, params)
     end
     if isfield(detailEntry, 'strongExternalScores') && ~isempty(detailEntry.strongExternalScores)
         sDiag.strongExternalScoresStr = formatNumericVector(detailEntry.strongExternalScores, '%.2e');
+    end
+    if isfield(detailEntry, 'scoreMode') && ~isempty(detailEntry.scoreMode)
+        sDiag.scoreMode = char(string(detailEntry.scoreMode));
+    end
+    if isfield(detailEntry, 'dynamicScoreHead') && ~isempty(detailEntry.dynamicScoreHead)
+        sDiag.dynamicScoreHeadStr = formatNumericVector(detailEntry.dynamicScoreHead, '%.2e');
+    end
+    if isfield(detailEntry, 'topRefineCoarseRanks') && ~isempty(detailEntry.topRefineCoarseRanks)
+        sDiag.topRefineCoarseRanksStr = formatNumericVector(detailEntry.topRefineCoarseRanks, '%d');
+    end
+    if isfield(detailEntry, 'topRefineFinalRanks') && ~isempty(detailEntry.topRefineFinalRanks)
+        sDiag.topRefineFinalRanksStr = formatNumericVector(detailEntry.topRefineFinalRanks, '%d');
+    end
+    if isfield(detailEntry, 'stagnationLevel') && ~isempty(detailEntry.stagnationLevel)
+        sDiag.stagnationLevel = detailEntry.stagnationLevel;
+    end
+    if isfield(detailEntry, 'intensificationTriggered') && ~isempty(detailEntry.intensificationTriggered)
+        sDiag.intensificationTriggered = double(logical(detailEntry.intensificationTriggered));
+    end
+    if isfield(detailEntry, 'limitedTwoSwapTried') && ~isempty(detailEntry.limitedTwoSwapTried)
+        sDiag.limitedTwoSwapTried = double(logical(detailEntry.limitedTwoSwapTried));
+    end
+    if isfield(detailEntry, 'limitedTwoSwapAccepted') && ~isempty(detailEntry.limitedTwoSwapAccepted)
+        sDiag.limitedTwoSwapAccepted = double(logical(detailEntry.limitedTwoSwapAccepted));
+    end
+    if isfield(detailEntry, 'postAcceptShortRefineTriggered') && ~isempty(detailEntry.postAcceptShortRefineTriggered)
+        sDiag.postAcceptShortRefineTriggered = double(logical(detailEntry.postAcceptShortRefineTriggered));
+    end
+    if isfield(detailEntry, 'postAcceptGain') && ~isempty(detailEntry.postAcceptGain)
+        sDiag.postAcceptGain = detailEntry.postAcceptGain;
+    end
+    if isfield(detailEntry, 'tabuHeadPairs') && ~isempty(detailEntry.tabuHeadPairs)
+        sDiag.tabuHeadPairsStr = mat2str(detailEntry.tabuHeadPairs);
+    end
+    if isfield(detailEntry, 'penaltyHeadPairs') && ~isempty(detailEntry.penaltyHeadPairs)
+        sDiag.penaltyHeadPairsStr = formatNumericVector(detailEntry.penaltyHeadPairs, '%.2e');
     end
 end
 
@@ -414,6 +465,14 @@ function sTable = buildSTraceTable(results)
     strongUserSet = strings(nIter, 1);
     dynamicCandidatePoolHead = strings(nIter, 1);
     strongExternalScores = strings(nIter, 1);
+    scoreMode = strings(nIter, 1);
+    dynamicScoreHead = strings(nIter, 1);
+    stagnationLevel = zeros(nIter, 1);
+    intensificationTriggered = zeros(nIter, 1);
+    limitedTwoSwapTried = zeros(nIter, 1);
+    limitedTwoSwapAccepted = zeros(nIter, 1);
+    postAcceptShortRefineTriggered = zeros(nIter, 1);
+    postAcceptGain = zeros(nIter, 1);
     for t = 1:nIter
         bh = getBlockHistoryEntry(results.trace.blockHistory, t);
         sDiag = summarizeSBlock(bh, results.params);
@@ -432,11 +491,21 @@ function sTable = buildSTraceTable(results)
         strongUserSet(t) = string(sDiag.strongUserSetStr);
         dynamicCandidatePoolHead(t) = string(sDiag.dynamicCandidatePoolHeadStr);
         strongExternalScores(t) = string(sDiag.strongExternalScoresStr);
+        scoreMode(t) = string(sDiag.scoreMode);
+        dynamicScoreHead(t) = string(sDiag.dynamicScoreHeadStr);
+        stagnationLevel(t) = sDiag.stagnationLevel;
+        intensificationTriggered(t) = sDiag.intensificationTriggered;
+        limitedTwoSwapTried(t) = sDiag.limitedTwoSwapTried;
+        limitedTwoSwapAccepted(t) = sDiag.limitedTwoSwapAccepted;
+        postAcceptShortRefineTriggered(t) = sDiag.postAcceptShortRefineTriggered;
+        postAcceptGain(t) = sDiag.postAcceptGain;
     end
     sTable = table(iter, triggered, evaluatedPairs, refinedPairs, positiveCoarse, ...
         positiveFinal, aboveEpsilonS, bestDeltaCoarse, bestDeltaFinal, bestMargin, ...
         acceptedSwaps, breakReason, weakUserSet, strongUserSet, ...
-        dynamicCandidatePoolHead, strongExternalScores);
+        dynamicCandidatePoolHead, strongExternalScores, scoreMode, dynamicScoreHead, ...
+        stagnationLevel, intensificationTriggered, limitedTwoSwapTried, ...
+        limitedTwoSwapAccepted, postAcceptShortRefineTriggered, postAcceptGain);
 end
 
 function xTable = buildXTraceTable(results)
