@@ -123,14 +123,16 @@ function params = defaultParameters()
     params.angleMaxRounds = 6;
     params.angleSkipFailureThreshold = 4;
 
-    params.positionFiniteDiff = 1e-3;
+    params.positionFiniteDiff = 1e-4;
     params.positionLineSearchInit = 1.0;
     params.positionLineSearchBeta = 0.5;
-    params.positionLineSearchMin = 1e-4;
-    params.positionLineSearchMaxSteps = 8;
+    params.positionLineSearchMin = 1e-6;
+    params.positionLineSearchMaxSteps = 20;
     params.positionProjectionCollapseTol = 1e-10;
+    params.positionActiveConstraintTol = 1e-6;
     params.positionRefineMargin = 1e-4;
     params.positionRefineMinMove = 1e-3;
+    params.positionEnableShortRefine = false;
     params.positionMemory = 7;
     params.epsilonX = 1e-7;
 

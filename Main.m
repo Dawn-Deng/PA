@@ -143,9 +143,10 @@ function printSummaryAndTrace(results, verbosity)
             fprintf('  Sdet: weak=%s strong=%s pool=%s scores=%s\n', ...
                 sDiag.weakUserSetStr, sDiag.strongUserSetStr, sDiag.dynamicCandidatePoolHeadStr, sDiag.strongExternalScoresStr);
             xDiag = summarizeXBlock(bh);
-            fprintf('  X: acc=%d ls=%d projCollapse=%d bestWG=%d bestCoarse=%.2e bestFinal=%.2e rejectMain=%s\n', ...
+            fprintf('  X: acc=%d ls=%d projCollapse=%d actB=%d actGap=%d bestWG=%d bestAlpha=%.2e bestCoarse=%.2e bestFinal=%.2e rejectMain=%s\n', ...
                 xDiag.acceptedCount, xDiag.totalLineSearchSteps, xDiag.projectionCollapsedCount, ...
-                xDiag.bestWaveguide, xDiag.bestCoarseImprove, xDiag.bestFinalImprove, xDiag.dominantRejectReason);
+                xDiag.activeBoundaryCount, xDiag.activeSpacingCount, xDiag.bestWaveguide, xDiag.bestAlpha, ...
+                xDiag.bestCoarseImprove, xDiag.bestFinalImprove, xDiag.dominantRejectReason);
         end
     end
 
@@ -273,7 +274,10 @@ function xDiag = summarizeXBlock(blockHistoryEntry)
         'acceptedCount', 0, ...
         'totalLineSearchSteps', 0, ...
         'projectionCollapsedCount', 0, ...
+        'activeBoundaryCount', 0, ...
+        'activeSpacingCount', 0, ...
         'bestWaveguide', NaN, ...
+        'bestAlpha', NaN, ...
         'bestCoarseImprove', NaN, ...
         'bestFinalImprove', NaN, ...
         'dominantRejectReason', 'NA');
@@ -293,6 +297,12 @@ function xDiag = summarizeXBlock(blockHistoryEntry)
     projCollapse = [wg.projectionCollapsedCount];
     xDiag.totalLineSearchSteps = sum(lsSteps(isfinite(lsSteps)));
     xDiag.projectionCollapsedCount = sum(projCollapse(isfinite(projCollapse)));
+    if isfield(wg, 'activeBoundaryConstraint')
+        xDiag.activeBoundaryCount = sum([wg.activeBoundaryConstraint]);
+    end
+    if isfield(wg, 'activeSpacingConstraint')
+        xDiag.activeSpacingCount = sum([wg.activeSpacingConstraint]);
+    end
 
     coarseImprove = [wg.bestCoarseRate] - [wg.sumRateBefore];
     finalImprove = [wg.bestFinalRate] - [wg.sumRateBefore];
@@ -304,6 +314,9 @@ function xDiag = summarizeXBlock(blockHistoryEntry)
             xDiag.bestWaveguide = wg(idxBest).waveguideIndex;
         else
             xDiag.bestWaveguide = idxBest;
+        end
+        if isfield(wg(idxBest), 'alphaAccepted') && ~isempty(wg(idxBest).alphaAccepted)
+            xDiag.bestAlpha = wg(idxBest).alphaAccepted;
         end
     end
     if any(isfinite(coarseImprove))
@@ -376,7 +389,10 @@ function xTable = buildXTraceTable(results)
     acceptedCount = zeros(nIter, 1);
     totalLineSearchSteps = zeros(nIter, 1);
     projectionCollapsedCount = zeros(nIter, 1);
+    activeBoundaryCount = zeros(nIter, 1);
+    activeSpacingCount = zeros(nIter, 1);
     bestWaveguide = nan(nIter, 1);
+    bestAlpha = nan(nIter, 1);
     bestCoarseImprove = nan(nIter, 1);
     bestFinalImprove = nan(nIter, 1);
     dominantRejectReason = strings(nIter, 1);
@@ -386,13 +402,17 @@ function xTable = buildXTraceTable(results)
         acceptedCount(t) = xDiag.acceptedCount;
         totalLineSearchSteps(t) = xDiag.totalLineSearchSteps;
         projectionCollapsedCount(t) = xDiag.projectionCollapsedCount;
+        activeBoundaryCount(t) = xDiag.activeBoundaryCount;
+        activeSpacingCount(t) = xDiag.activeSpacingCount;
         bestWaveguide(t) = xDiag.bestWaveguide;
+        bestAlpha(t) = xDiag.bestAlpha;
         bestCoarseImprove(t) = xDiag.bestCoarseImprove;
         bestFinalImprove(t) = xDiag.bestFinalImprove;
         dominantRejectReason(t) = string(xDiag.dominantRejectReason);
     end
     xTable = table(iter, acceptedCount, totalLineSearchSteps, projectionCollapsedCount, ...
-        bestWaveguide, bestCoarseImprove, bestFinalImprove, dominantRejectReason);
+        activeBoundaryCount, activeSpacingCount, bestWaveguide, bestAlpha, ...
+        bestCoarseImprove, bestFinalImprove, dominantRejectReason);
 end
 
 function out = formatNumericVector(vec, fmt)
