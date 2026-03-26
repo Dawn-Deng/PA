@@ -408,6 +408,27 @@ function [directionClean, info] = cleanupDirectionToFeasibleCone(xCurrent, direc
         'spacingConflictPairsClipped', spacingClipCount);
 end
 
+function diag = computeConstraintDiagnostics(x, params)
+    spacingMargin = diff(x) - params.deltaMin;
+    minSpacingMargin = inf;
+    if ~isempty(spacingMargin)
+        minSpacingMargin = min(spacingMargin);
+    end
+
+    minLower = min(x);
+    minUpper = min(params.Dy - x);
+    activeTol = 1e-6;
+    if isfield(params, 'positionActiveConstraintTol') && ~isempty(params.positionActiveConstraintTol)
+        activeTol = params.positionActiveConstraintTol;
+    end
+    diag = struct( ...
+        'minDistToLowerBoundary', minLower, ...
+        'minDistToUpperBoundary', minUpper, ...
+        'minSpacingMargin', minSpacingMargin, ...
+        'activeBoundaryConstraint', (minLower <= activeTol) || (minUpper <= activeTol), ...
+        'activeSpacingConstraint', minSpacingMargin <= activeTol);
+end
+
 function grad = numericalGradient(state, params, n, x)
     grad = zeros(params.M, 1);
     delta = params.positionFiniteDiff;
