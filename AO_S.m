@@ -723,8 +723,10 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     coarseDeltas = [pairData.deltaCoarse];
     strongScoreVec = [pairData.strongUserCurrentScore];
     weakRateVec = [pairData.weakUserRate];
-    blended = coarseDeltas + params.userSetCoarsePredictiveBlend(1) * normalizeScoreComponent(strongScoreVec, params.userSetDynamicScoreNormalize) ...
-        - params.userSetCoarsePredictiveBlend(2) * normalizeScoreComponent(weakRateVec, params.userSetDynamicScoreNormalize);
+    strongScoreNorm = normalizeScoreComponent(strongScoreVec, params.userSetDynamicScoreNormalize).';
+    weakRateNorm = normalizeScoreComponent(weakRateVec, params.userSetDynamicScoreNormalize).';
+    blended = coarseDeltas + params.userSetCoarsePredictiveBlend(1) * strongScoreNorm ...
+        - params.userSetCoarsePredictiveBlend(2) * weakRateNorm;
     [~, order] = sort(blended, 'descend');
     refineIndices = order(1:numRefineCandidates);
     rankByCoarse = zeros(1, pairCount);
