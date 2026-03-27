@@ -35,7 +35,7 @@ paramsOverride.IW = 60;
 paramsOverride.Tmax = 20;
 paramsOverride.epsilonOuter = 1e-6;
 % 可选：结果可视化开关（默认关闭，不影响原流程）
-paramsOverride.enablePlotResults = false;
+paramsOverride.enablePlotResults = true;
 paramsOverride.plotSaveDir = '';
 % paramsOverride.saveResults = true;
 % paramsOverride.savePath = 'results_demo.mat';
