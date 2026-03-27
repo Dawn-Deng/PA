@@ -132,6 +132,8 @@ function [state, info] = AO_S(state, params, t)
         info.currentStateWeights = scoreDebug.currentStateWeights;
         info.shortlistInfo = scoreDebug.shortlistInfo;
         info.scoreFlow = scoreDebug.scoreFlow;
+        info.scoreFlow.finalStrongExternal = strongExternal;
+        info.scoreFlow.focusRound = (t == 2 || t == 4);
         info.twoSwap = struct();
         info.weakAnchorUser = weakAnchorUser;
         info.weakAnchorSet = weakUsers;
@@ -159,6 +161,8 @@ function [state, info] = AO_S(state, params, t)
         swapTrace(swapIter).currentStateWeights = scoreDebug.currentStateWeights;
         swapTrace(swapIter).shortlistInfo = scoreDebug.shortlistInfo;
         swapTrace(swapIter).scoreFlow = scoreDebug.scoreFlow;
+        swapTrace(swapIter).scoreFlow.finalStrongExternal = strongExternal;
+        swapTrace(swapIter).scoreFlow.focusRound = (t == 2 || t == 4);
         swapTrace(swapIter).weakAnchorUser = weakAnchorUser;
         swapTrace(swapIter).weakAnchorSet = weakUsers;
         swapTrace(swapIter).bestWeakForPoolHead = bestWeakForPoolHead;
@@ -627,20 +631,23 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     currentStateScore = currentStateWeights(1) * chanN + currentStateWeights(2) * weakN + ...
         currentStateWeights(3) * compN - currentStateWeights(4) * penN;
 
-    baseWeight = params.userSetBaseScoreWeight * (0.6 ^ stagnationLevel);
+    jitterRaw = zeros(size(baseN));
+    jitterN = zeros(size(baseN));
     weights = zeros(1, 5);
     if params.userSetBaseScoreTieBreakOnly
         mixed = currentStateScore + 1e-6 * baseN;
         weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
     elseif params.userSetCurrentStateDominantRanking
-        mixed = currentStateScore + baseWeight * baseN;
-        weights = [baseWeight, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
+        mixed = currentStateScore + 1e-6 * baseN;
+        weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
     else
         weights = getDynamicWeightsByLevel(params, stagnationLevel);
         mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
     end
     if stagnationLevel >= params.userSetTwoSwapMinLevel
-        mixed = mixed + params.userSetDiversificationJitterScale * randn(size(mixed));
+        jitterRaw = params.userSetDiversificationJitterScale * randn(size(mixed));
+        jitterN = normalizeScoreComponent(jitterRaw, normMode);
+        mixed = mixed + jitterRaw;
     end
     dynamicScore(shortlist) = mixed;
     currentScore(shortlist) = dynamicScore(shortlist);
@@ -685,7 +692,7 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         'shortlistInfo', struct('enabled', usePrescreen, 'poolSize', numel(externalAll), ...
                                 'shortlistSize', numel(shortlist)), ...
         'scoreFlow', buildScoreFlowDebug(dynamicCandidatePool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, ...
-                        baseN, chanN, weakN, compN, penN, currentStateScore, currentScore, dynamicScore), ...
+                        baseN, chanN, weakN, compN, penN, jitterRaw, jitterN, currentStateScore, currentScore, dynamicScore), ...
         'candidateScoreTable', buildCandidateScoreTable(shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, ...
                         baseN, chanN, weakN, compN, penN, currentScore), ...
         'stagnationMemory', struct('consecutiveFailures', userSetMemory.consecutiveFailures, ...
@@ -1191,7 +1198,7 @@ function out = normalizeScoreComponent(v, mode)
     end
 end
 
-function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentStateScore, currentScore, dynamicScore)
+function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, jitterRaw, jitterN, currentStateScore, currentScore, dynamicScore)
     head = dynamicPool(1:min(8, numel(dynamicPool)));
     flow = struct();
     flow.rankCandidates = head(:).';
@@ -1200,11 +1207,13 @@ function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, we
     flow.rawWeakProxy = fetchValuesByCandidate(head, shortlist, weakRaw);
     flow.rawComplementarity = fetchValuesByCandidate(head, shortlist, compRaw);
     flow.rawPenalty = fetchValuesByCandidate(head, shortlist, penRaw);
+    flow.rawJitter = fetchValuesByCandidate(head, shortlist, jitterRaw);
     flow.normBase = fetchValuesByCandidate(head, shortlist, baseN);
     flow.normChannel = fetchValuesByCandidate(head, shortlist, chanN);
     flow.normWeakProxy = fetchValuesByCandidate(head, shortlist, weakN);
     flow.normComplementarity = fetchValuesByCandidate(head, shortlist, compN);
     flow.normPenalty = fetchValuesByCandidate(head, shortlist, penN);
+    flow.normJitter = fetchValuesByCandidate(head, shortlist, jitterN);
     flow.currentStateRaw = fetchValuesByCandidate(head, shortlist, currentStateScore);
     flow.finalMixed = currentScore(head).';
     flow.dynamicMixed = dynamicScore(head).';
