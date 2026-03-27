@@ -32,6 +32,9 @@ paramsOverride.userRegionY = [6, 12];
 paramsOverride.IW = 60;
 paramsOverride.Tmax = 20;
 paramsOverride.epsilonOuter = 1e-6;
+% 可选：结果可视化开关（默认关闭，不影响原流程）
+paramsOverride.enablePlotResults = false;
+paramsOverride.plotSaveDir = '';
 % paramsOverride.saveResults = true;
 % paramsOverride.savePath = 'results_demo.mat';
 
@@ -88,6 +91,19 @@ if params.saveResults
 end
 
 printSummaryAndTrace(results, params.verbosity);
+
+% 可选调用：集中式结果可视化（默认关闭，保持最小侵入）
+if isfield(params, 'enablePlotResults') && params.enablePlotResults
+    try
+        if isfield(params, 'plotSaveDir') && ~isempty(params.plotSaveDir)
+            plot_all_results(results, params.plotSaveDir);
+        else
+            plot_all_results(results);
+        end
+    catch ME
+        warning('Main:PlotAllResultsFailed', 'plot_all_results failed: %s', ME.message);
+    end
+end
 
 
 function reason = getLastWStopReason(aoInfo)
