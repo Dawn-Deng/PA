@@ -27,6 +27,8 @@ function [state, info] = AO_S(state, params, t)
         'scoreTypeDetail', '', ...
         'dynamicBaseVsDynHead', [], ...
         'dynamicWeights', [], ...
+        'currentStateWeights', [], ...
+        'shortlistInfo', struct(), ...
         'twoSwap', struct(), ...
         'breakReason', 'notTriggered');
 
@@ -73,6 +75,8 @@ function [state, info] = AO_S(state, params, t)
         'penaltyHeadPairs', [], ...
         'dynamicBaseVsDynHead', [], ...
         'dynamicWeights', [], ...
+        'currentStateWeights', [], ...
+        'shortlistInfo', struct(), ...
         'topRefineCoarseRanks', [], ...
         'topRefineFinalRanks', [], ...
         'topRefinePairList', [], ...
@@ -120,6 +124,8 @@ function [state, info] = AO_S(state, params, t)
         info.penaltyHeadPairs = scoreDebug.penaltyHeadPairs;
         info.dynamicBaseVsDynHead = scoreDebug.baseVsDynHead;
         info.dynamicWeights = scoreDebug.dynamicWeights;
+        info.currentStateWeights = scoreDebug.currentStateWeights;
+        info.shortlistInfo = scoreDebug.shortlistInfo;
         info.twoSwap = struct();
         info.weakAnchorUser = weakAnchorUser;
         info.weakAnchorSet = weakUsers;
@@ -144,6 +150,8 @@ function [state, info] = AO_S(state, params, t)
         swapTrace(swapIter).penaltyHeadPairs = scoreDebug.penaltyHeadPairs;
         swapTrace(swapIter).dynamicBaseVsDynHead = scoreDebug.baseVsDynHead;
         swapTrace(swapIter).dynamicWeights = scoreDebug.dynamicWeights;
+        swapTrace(swapIter).currentStateWeights = scoreDebug.currentStateWeights;
+        swapTrace(swapIter).shortlistInfo = scoreDebug.shortlistInfo;
         swapTrace(swapIter).weakAnchorUser = weakAnchorUser;
         swapTrace(swapIter).weakAnchorSet = weakUsers;
         swapTrace(swapIter).bestWeakForPoolHead = bestWeakForPoolHead;
@@ -455,6 +463,7 @@ end
 function d = emptyScoreDebug()
     d = struct('dynamicScoreHead', [], 'scoreMode', 'none', 'tabuHeadPairs', [], ...
         'penaltyHeadPairs', [], 'baseVsDynHead', [], 'dynamicWeights', [], ...
+        'currentStateWeights', [], 'shortlistInfo', struct('enabled', false, 'poolSize', 0, 'shortlistSize', 0), ...
         'stagnationMemory', struct('consecutiveFailures', 0, 'stagnationCount', 0, 'recentSuccessRate', 0));
 end
 
@@ -477,8 +486,8 @@ end
 
 function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUser, scoreTypeDetail, scoreDebug] = ...
     buildDynamicCandidatePool(state, params, weakUserPositions, weakUsers, userSetMemory, stagnationLevel)
-    scoreType = 'mixedDynamicScore';
-    scoreTypeDetail = 'normalized(base+channelPotential+weakReplacement+complementarity-penalty)';
+    scoreType = 'currentStateDominantMixedScore';
+    scoreTypeDetail = 'normalized(currentStateDominant: channel+replacement+complementarity-penalty, base as weak prior)';
     weakAnchorUser = [];
     if ~isempty(weakUsers)
         weakAnchorUser = weakUsers(1);
@@ -533,26 +542,48 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         penaltyScore(externalAll) = penaltyScore(externalAll) + params.userSetRepeatFailurePenalty * userSetMemory.failureCount(keys);
     end
 
-    weights = getDynamicWeightsByLevel(params, stagnationLevel);
-    baseN = normalizeScoreComponent(baseScore(externalAll), params.userSetDynamicScoreNormalize);
-    chanN = normalizeScoreComponent(channelPotential(externalAll), params.userSetDynamicScoreNormalize);
-    weakN = normalizeScoreComponent(weakRateProxy(externalAll), params.userSetDynamicScoreNormalize);
-    compN = normalizeScoreComponent(complementarity(externalAll), params.userSetDynamicScoreNormalize);
-    penN = normalizeScoreComponent(penaltyScore(externalAll), params.userSetDynamicScoreNormalize);
-    mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
+    normMode = params.userSetDynamicScoreNormalizeMode;
+    if isempty(normMode)
+        normMode = params.userSetDynamicScoreNormalize;
+    end
+    usePrescreen = params.userSetUseBasePrescreen;
+    if usePrescreen
+        shortlistN = min(numel(externalAll), max(params.userSetExternalShortlistSize, params.userSetDynamicRescoreTopK));
+        [~, baseOrder] = sort(baseScore(externalAll), 'descend');
+        shortlist = externalAll(baseOrder(1:shortlistN));
+    else
+        shortlist = externalAll;
+    end
+
+    baseN = normalizeScoreComponent(baseScore(shortlist), normMode);
+    chanN = normalizeScoreComponent(channelPotential(shortlist), normMode);
+    weakN = normalizeScoreComponent(weakRateProxy(shortlist), normMode);
+    compN = normalizeScoreComponent(complementarity(shortlist), normMode);
+    penN = normalizeScoreComponent(penaltyScore(shortlist), normMode);
+
+    currentStateWeights = getCurrentStateWeightsByLevel(params, stagnationLevel);
+    currentStateScore = currentStateWeights(1) * chanN + currentStateWeights(2) * weakN + ...
+        currentStateWeights(3) * compN - currentStateWeights(4) * penN;
+
+    baseWeight = params.userSetBaseScoreWeight * (0.75 ^ stagnationLevel);
+    weights = zeros(1, 5);
+    if params.userSetBaseScoreTieBreakOnly
+        mixed = currentStateScore + 1e-6 * baseN;
+        weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
+    elseif params.userSetCurrentStateDominantRanking
+        currWeight = max(params.userSetCurrentStateScoreWeight, 1 - baseWeight);
+        mixed = currWeight * currentStateScore + baseWeight * baseN;
+        weights = [baseWeight, currWeight * currentStateWeights(1), currWeight * currentStateWeights(2), ...
+            currWeight * currentStateWeights(3), currWeight * currentStateWeights(4)];
+    else
+        weights = getDynamicWeightsByLevel(params, stagnationLevel);
+        mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
+    end
     if stagnationLevel >= params.userSetTwoSwapMinLevel
         mixed = mixed + params.userSetDiversificationJitterScale * randn(size(mixed));
     end
-    dynamicScore(externalAll) = mixed;
-
-    if params.userSetUseDynamicMixedScore
-        [~, baseOrder] = sort(baseScore(externalAll), 'descend');
-        coarseTop = externalAll(baseOrder(1:min(numel(externalAll), params.userSetDynamicRescoreTopK)));
-        currentScore(externalAll) = baseScore(externalAll);
-        currentScore(coarseTop) = dynamicScore(coarseTop);
-    else
-        currentScore(externalAll) = baseScore(externalAll);
-    end
+    dynamicScore(shortlist) = mixed;
+    currentScore(shortlist) = dynamicScore(shortlist);
 
     tabuBlocked = false(size(externalAll));
     for idx = 1:numel(externalAll)
@@ -586,9 +617,13 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     baseVsDynHead = [dynamicCandidatePool(1:headN).', baseRank(1:headN).', dynRank(1:headN).'];
     scoreDebug = struct( ...
         'dynamicScoreHead', dynamicScore(dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)))).', ...
-        'scoreMode', ternary(params.userSetUseDynamicMixedScore, 'dynamicMixed', 'baseOnly'), ...
+        'scoreMode', ternary(params.userSetUseDynamicMixedScore, ...
+            ternary(params.userSetCurrentStateDominantRanking, 'currentStateDominant', 'dynamicMixed'), 'baseOnly'), ...
         'dynamicWeights', weights(:).', ...
+        'currentStateWeights', currentStateWeights(:).', ...
         'baseVsDynHead', baseVsDynHead, ...
+        'shortlistInfo', struct('enabled', usePrescreen, 'poolSize', numel(externalAll), ...
+                                'shortlistSize', numel(shortlist)), ...
         'stagnationMemory', struct('consecutiveFailures', userSetMemory.consecutiveFailures, ...
                                    'stagnationCount', userSetMemory.stagnationCount, ...
                                    'recentSuccessRate', mean(userSetMemory.recentAccepted)), ...
@@ -992,7 +1027,19 @@ function [invalid, powerVal] = isInvalidCandidateW(W, pmax)
 end
 
 function params = ensureUserSetParams(params)
+    params = setDefault(params, 'userSetCurrentStateDominantRanking', true);
+    params = setDefault(params, 'userSetBaseScoreWeight', 0.08);
+    params = setDefault(params, 'userSetCurrentStateScoreWeight', 0.92);
+    params = setDefault(params, 'userSetCurrentStateScoreWeightsByLevel', ...
+        [0.36, 0.28, 0.24, 0.12; ...
+         0.34, 0.30, 0.24, 0.12; ...
+         0.32, 0.32, 0.24, 0.12; ...
+         0.30, 0.34, 0.24, 0.12]);
+    params = setDefault(params, 'userSetBaseScoreTieBreakOnly', false);
+    params = setDefault(params, 'userSetExternalShortlistSize', 18);
+    params = setDefault(params, 'userSetUseBasePrescreen', true);
     params = setDefault(params, 'userSetDynamicScoreNormalize', 'rank');
+    params = setDefault(params, 'userSetDynamicScoreNormalizeMode', 'rank');
     params = setDefault(params, 'userSetDynamicScoreWeightsBase', [0.40, 0.25, 0.20, 0.10, 0.05]);
     params = setDefault(params, 'userSetDynamicScoreWeightsLevel1', [0.28, 0.28, 0.22, 0.14, 0.08]);
     params = setDefault(params, 'userSetDynamicScoreWeightsLevel2', [0.18, 0.30, 0.24, 0.18, 0.10]);
@@ -1028,6 +1075,24 @@ function w = getDynamicWeightsByLevel(params, level)
     w = w(:).';
     if numel(w) < 5
         w = [w, zeros(1, 5 - numel(w))];
+    end
+end
+
+function w = getCurrentStateWeightsByLevel(params, level)
+    tableW = params.userSetCurrentStateScoreWeightsByLevel;
+    if isvector(tableW)
+        w = tableW(:).';
+    else
+        idx = min(size(tableW, 1), max(1, level + 1));
+        w = tableW(idx, :);
+    end
+    w = w(:).';
+    if numel(w) < 4
+        w = [w, zeros(1, 4 - numel(w))];
+    end
+    s = sum(abs(w));
+    if s > 0
+        w = w / s;
     end
 end
 
