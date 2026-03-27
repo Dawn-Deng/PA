@@ -633,10 +633,8 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         mixed = currentStateScore + 1e-6 * baseN;
         weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
     elseif params.userSetCurrentStateDominantRanking
-        currWeight = max(params.userSetCurrentStateScoreWeight, 1 - baseWeight);
-        mixed = currWeight * currentStateScore + baseWeight * baseN;
-        weights = [baseWeight, currWeight * currentStateWeights(1), currWeight * currentStateWeights(2), ...
-            currWeight * currentStateWeights(3), currWeight * currentStateWeights(4)];
+        mixed = currentStateScore + baseWeight * baseN;
+        weights = [baseWeight, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
     else
         weights = getDynamicWeightsByLevel(params, stagnationLevel);
         mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
@@ -687,7 +685,7 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         'shortlistInfo', struct('enabled', usePrescreen, 'poolSize', numel(externalAll), ...
                                 'shortlistSize', numel(shortlist)), ...
         'scoreFlow', buildScoreFlowDebug(dynamicCandidatePool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, ...
-                        baseN, chanN, weakN, compN, penN, currentScore, dynamicScore), ...
+                        baseN, chanN, weakN, compN, penN, currentStateScore, currentScore, dynamicScore), ...
         'candidateScoreTable', buildCandidateScoreTable(shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, ...
                         baseN, chanN, weakN, compN, penN, currentScore), ...
         'stagnationMemory', struct('consecutiveFailures', userSetMemory.consecutiveFailures, ...
@@ -1193,7 +1191,7 @@ function out = normalizeScoreComponent(v, mode)
     end
 end
 
-function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentScore, dynamicScore)
+function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentStateScore, currentScore, dynamicScore)
     head = dynamicPool(1:min(8, numel(dynamicPool)));
     flow = struct();
     flow.rankCandidates = head(:).';
@@ -1207,8 +1205,17 @@ function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, we
     flow.normWeakProxy = fetchValuesByCandidate(head, shortlist, weakN);
     flow.normComplementarity = fetchValuesByCandidate(head, shortlist, compN);
     flow.normPenalty = fetchValuesByCandidate(head, shortlist, penN);
+    flow.currentStateRaw = fetchValuesByCandidate(head, shortlist, currentStateScore);
     flow.finalMixed = currentScore(head).';
     flow.dynamicMixed = dynamicScore(head).';
+    [~, baseOrd] = sort(baseRaw, 'descend');
+    [~, csOrd] = sort(currentStateScore, 'descend');
+    flow.baseTopUsers = shortlist(baseOrd(1:min(8, numel(shortlist)))).';
+    flow.baseTopScores = baseRaw(baseOrd(1:min(8, numel(shortlist)))).';
+    flow.currentStateTopUsers = shortlist(csOrd(1:min(8, numel(shortlist)))).';
+    flow.currentStateTopScores = currentStateScore(csOrd(1:min(8, numel(shortlist)))).';
+    flow.shortlistBeforeReorder = shortlist(:).';
+    flow.shortlistAfterReorder = dynamicPool(:).';
 end
 
 function table = buildCandidateScoreTable(shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentScore)
