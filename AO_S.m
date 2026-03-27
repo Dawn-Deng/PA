@@ -577,13 +577,13 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
 
     weakRateProxy = zeros(params.K, 1);
     if ~isempty(weakUsers)
-        weakChannelLevel = channelPotential(weakUsers);
-        weakRef = mean(weakChannelLevel);
         Hweak = state.channelMatrix(weakUsers, :);
+        Hserv = state.channelMatrix(state.S, :);
         for u = externalAll(:).'
             hu = state.channelMatrix(u, :).';
             weakAlign = mean(abs(Hweak * hu));
-            weakRateProxy(u) = (channelPotential(u) - weakRef) + 0.25 * weakAlign;
+            servAlign = mean(abs(Hserv * hu));
+            weakRateProxy(u) = weakAlign - servAlign;
         end
     end
 
@@ -1102,10 +1102,10 @@ function params = ensureUserSetParams(params)
     params = setDefault(params, 'userSetBaseScoreWeight', 0.08);
     params = setDefault(params, 'userSetCurrentStateScoreWeight', 0.92);
     params = setDefault(params, 'userSetCurrentStateScoreWeightsByLevel', ...
-        [0.36, 0.28, 0.24, 0.12; ...
-         0.34, 0.30, 0.24, 0.12; ...
-         0.32, 0.32, 0.24, 0.12; ...
-         0.30, 0.34, 0.24, 0.12]);
+        [0.18, 0.34, 0.34, 0.14; ...
+         0.16, 0.34, 0.36, 0.14; ...
+         0.14, 0.34, 0.38, 0.14; ...
+         0.12, 0.34, 0.40, 0.14]);
     params = setDefault(params, 'userSetBaseScoreTieBreakOnly', false);
     params = setDefault(params, 'userSetExternalShortlistSize', 18);
     params = setDefault(params, 'userSetUseBasePrescreen', false);
@@ -1225,6 +1225,9 @@ function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, we
     flow.currentStateTopScores = currentStateScore(csOrd(1:min(8, numel(shortlist)))).';
     flow.shortlistBeforeReorder = shortlist(:).';
     flow.shortlistAfterReorder = dynamicPool(:).';
+    flow.finalRankingUsers = dynamicPool(:).';
+    flow.finalRankingScores = currentScore(dynamicPool).';
+    flow.finalRankingSource = 'currentScore(finalMixed)';
 end
 
 function table = buildCandidateScoreTable(shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentScore)
