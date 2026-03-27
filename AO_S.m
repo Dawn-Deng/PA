@@ -1,5 +1,6 @@
 function [state, info] = AO_S(state, params, t)
 %AO_S User-set block update with full swapTrace.
+    params = ensureUserSetParams(params);
 
     info = struct( ...
         'triggered', mod(t, params.TS) == 0, ...
@@ -22,7 +23,13 @@ function [state, info] = AO_S(state, params, t)
         'tabuHeadPairs', [], ...
         'penaltyHeadPairs', [], ...
         'intensificationTriggered', false, ...
+        'stagnationMemory', struct(), ...
         'scoreTypeDetail', '', ...
+        'dynamicBaseVsDynHead', [], ...
+        'dynamicWeights', [], ...
+        'currentStateWeights', [], ...
+        'shortlistInfo', struct(), ...
+        'twoSwap', struct(), ...
         'breakReason', 'notTriggered');
 
     if ~info.triggered
@@ -63,13 +70,25 @@ function [state, info] = AO_S(state, params, t)
         'scoreMode', '', ...
         'stagnationLevel', 0, ...
         'intensificationTriggered', false, ...
+        'stagnationMemory', struct(), ...
         'tabuHeadPairs', [], ...
         'penaltyHeadPairs', [], ...
+        'dynamicBaseVsDynHead', [], ...
+        'dynamicWeights', [], ...
+        'currentStateWeights', [], ...
+        'shortlistInfo', struct(), ...
         'topRefineCoarseRanks', [], ...
         'topRefineFinalRanks', [], ...
         'topRefinePairList', [], ...
         'limitedTwoSwapTried', false, ...
         'limitedTwoSwapAccepted', false, ...
+        'acceptedByTwoSwap', false, ...
+        'twoSwapEvaluated', 0, ...
+        'twoSwapBestOneDelta', -inf, ...
+        'twoSwapBestDelta', -inf, ...
+        'twoSwapBestSequence', [], ...
+        'acceptedDelta', -inf, ...
+        'twoSwapReason', '', ...
         'postAcceptShortRefineTriggered', false, ...
         'postAcceptGain', 0, ...
         'scoreTypeDetail', '', ...
@@ -82,7 +101,7 @@ function [state, info] = AO_S(state, params, t)
     for swapIter = 1:params.maxSwapPerUpdate
         sumRateBefore = state.sumRate;
         userSetMemory = decayTabuMemory(userSetMemory);
-        [stagnationLevel, intensificationTriggered] = getStagnationLevel(userSetMemory, params);
+        [stagnationLevel, intensificationTriggered, levelReason] = getStagnationLevel(userSetMemory, params);
         localLin = params.Lin + stagnationLevel * params.userSetExpandLinPerLevel;
         localLout = params.Lout + stagnationLevel * params.userSetExpandLoutPerLevel;
         topRefineLocal = params.userSetTopKRefine + stagnationLevel * params.userSetTopKRefineExpandPerLevel;
@@ -102,8 +121,14 @@ function [state, info] = AO_S(state, params, t)
         info.scoreMode = scoreDebug.scoreMode;
         info.stagnationLevel = stagnationLevel;
         info.intensificationTriggered = intensificationTriggered;
+        info.stagnationMemory = scoreDebug.stagnationMemory;
         info.tabuHeadPairs = scoreDebug.tabuHeadPairs;
         info.penaltyHeadPairs = scoreDebug.penaltyHeadPairs;
+        info.dynamicBaseVsDynHead = scoreDebug.baseVsDynHead;
+        info.dynamicWeights = scoreDebug.dynamicWeights;
+        info.currentStateWeights = scoreDebug.currentStateWeights;
+        info.shortlistInfo = scoreDebug.shortlistInfo;
+        info.twoSwap = struct();
         info.weakAnchorUser = weakAnchorUser;
         info.weakAnchorSet = weakUsers;
         [bestWeakForPoolHead, multiWeakProxyMatrixHead] = computePoolHeadDiagnostics(state, params, weakUserPositions, weakUsers, poolHead, baseScore);
@@ -122,13 +147,19 @@ function [state, info] = AO_S(state, params, t)
         swapTrace(swapIter).scoreMode = scoreDebug.scoreMode;
         swapTrace(swapIter).stagnationLevel = stagnationLevel;
         swapTrace(swapIter).intensificationTriggered = intensificationTriggered;
+        swapTrace(swapIter).stagnationMemory = scoreDebug.stagnationMemory;
         swapTrace(swapIter).tabuHeadPairs = scoreDebug.tabuHeadPairs;
         swapTrace(swapIter).penaltyHeadPairs = scoreDebug.penaltyHeadPairs;
+        swapTrace(swapIter).dynamicBaseVsDynHead = scoreDebug.baseVsDynHead;
+        swapTrace(swapIter).dynamicWeights = scoreDebug.dynamicWeights;
+        swapTrace(swapIter).currentStateWeights = scoreDebug.currentStateWeights;
+        swapTrace(swapIter).shortlistInfo = scoreDebug.shortlistInfo;
         swapTrace(swapIter).weakAnchorUser = weakAnchorUser;
         swapTrace(swapIter).weakAnchorSet = weakUsers;
         swapTrace(swapIter).bestWeakForPoolHead = bestWeakForPoolHead;
         swapTrace(swapIter).multiWeakProxyMatrixHead = multiWeakProxyMatrixHead;
         swapTrace(swapIter).scoreTypeDetail = scoreTypeDetail;
+        swapTrace(swapIter).twoSwapReason = levelReason;
         swapTrace(swapIter).sumRateBefore = sumRateBefore;
 
         if isempty(weakUserPositions) || isempty(strongExternal)
@@ -177,6 +208,7 @@ function [state, info] = AO_S(state, params, t)
             swapTrace(swapIter).acceptedUsingRefine = evalSummary.bestCandidateUsedRefine;
             swapTrace(swapIter).acceptedSwapUserOut = bestPair.weakUser;
             swapTrace(swapIter).acceptedSwapUserIn = bestPair.strongUser;
+            swapTrace(swapIter).acceptedDelta = bestDelta;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = '';
             info.breakReason = '';
@@ -187,14 +219,49 @@ function [state, info] = AO_S(state, params, t)
                 swapTrace(swapIter).postAcceptGain = postGain;
             end
 
-            if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapTriggerLevel
-                swapTrace(swapIter).limitedTwoSwapTried = true;
-                [state, twoSwapAccepted] = tryLimitedSecondSwap(state, params, userSetMemory, localLin, localLout, topRefineLocal);
-                swapTrace(swapIter).limitedTwoSwapAccepted = twoSwapAccepted;
-            end
+            userSetMemory.lastBestDeltaFinal = bestDelta;
         else
+            userSetMemory.lastBestDeltaFinal = bestDelta;
+            if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel
+                swapTrace(swapIter).limitedTwoSwapTried = true;
+                [state2, twoSwapInfo] = tryLimitedTwoSwapFromTopCandidates(state, params, userSetMemory, weakUserPositions, weakUsers, strongExternal, currentScore, topRefineLocal, evaluatedPairs, bestDelta);
+                swapTrace(swapIter).twoSwapEvaluated = twoSwapInfo.evaluated;
+                swapTrace(swapIter).twoSwapBestOneDelta = twoSwapInfo.bestOneDelta;
+                swapTrace(swapIter).twoSwapBestDelta = twoSwapInfo.bestTwoDelta;
+                swapTrace(swapIter).twoSwapBestSequence = twoSwapInfo.bestSequence;
+                swapTrace(swapIter).twoSwapReason = twoSwapInfo.reason;
+                info.twoSwap = twoSwapInfo;
+                if twoSwapInfo.accepted
+                    state = state2;
+                    swapTrace(swapIter).accepted = true;
+                    swapTrace(swapIter).limitedTwoSwapAccepted = true;
+                    swapTrace(swapIter).acceptedByTwoSwap = true;
+                    swapTrace(swapIter).acceptedDelta = twoSwapInfo.bestTwoDelta;
+                    swapTrace(swapIter).bestDelta = twoSwapInfo.bestTwoDelta;
+                    swapTrace(swapIter).bestDeltaFinal = twoSwapInfo.bestTwoDelta;
+                    swapTrace(swapIter).bestDeltaMinusEpsilonS = twoSwapInfo.bestTwoDelta - params.epsilonS;
+                    swapTrace(swapIter).numCandidatesAboveEpsilonS = max(1, swapTrace(swapIter).numCandidatesAboveEpsilonS);
+                    if ~isempty(twoSwapInfo.bestSequence)
+                        swapTrace(swapIter).bestPair = struct('weakUser', twoSwapInfo.bestSequence(end, 1), ...
+                            'strongUser', twoSwapInfo.bestSequence(end, 2), 'position', []);
+                        swapTrace(swapIter).acceptedSwapUserOut = twoSwapInfo.bestSequence(end, 1);
+                        swapTrace(swapIter).acceptedSwapUserIn = twoSwapInfo.bestSequence(end, 2);
+                    end
+                    swapTrace(swapIter).sumRateAfter = state.sumRate;
+                    swapTrace(swapIter).breakReason = '';
+                    info.acceptedSwaps = info.acceptedSwaps + 1;
+                    if ~isempty(twoSwapInfo.bestSequence)
+                        finalPair = twoSwapInfo.bestSequence(end, :);
+                        userSetMemory = registerSwapOutcome(userSetMemory, struct('weakUser', finalPair(1), 'strongUser', finalPair(2)), true, params);
+                    else
+                        userSetMemory = registerSwapOutcome(userSetMemory, bestPair, true, params);
+                    end
+                    continue;
+                end
+            end
             userSetMemory = registerSwapOutcome(userSetMemory, bestPair, false, params);
             swapTrace(swapIter).accepted = false;
+            swapTrace(swapIter).acceptedDelta = bestDelta;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = 'bestDeltaBelowThreshold';
             info.breakReason = 'bestDeltaBelowThreshold';
@@ -226,39 +293,73 @@ function memory = initializeUserSetMemory(state, params)
     memory = struct( ...
         'failureCount', zeros(keySize, 1), ...
         'tabuCountdown', zeros(keySize, 1), ...
-        'stagnationCount', 0);
+        'stagnationCount', 0, ...
+        'consecutiveFailures', 0, ...
+        'triggerCount', 0, ...
+        'acceptedCount', 0, ...
+        'recentAccepted', zeros(params.userSetStagnationWindow, 1), ...
+        'recentBestDelta', zeros(params.userSetStagnationWindow, 1), ...
+        'lastBestDeltaFinal', -inf, ...
+        'lastLevel', 0);
 end
 
 function memory = decayTabuMemory(memory)
     memory.tabuCountdown = max(memory.tabuCountdown - 1, 0);
+    if isfield(memory, 'stagnationCount')
+        memory.stagnationCount = max(0, memory.stagnationCount - 0);
+    end
 end
 
-function [level, triggered] = getStagnationLevel(memory, params)
-    level = floor(memory.stagnationCount / max(1, params.userSetStagnationWindow));
-    level = min(level, params.userSetMaxIntensificationLevel);
+function [level, triggered, reason] = getStagnationLevel(memory, params)
+    thresholds = params.userSetStagnationEscalationThresholds(:).';
+    score = memory.stagnationCount + 0.8 * memory.consecutiveFailures;
+    if memory.triggerCount >= params.userSetStagnationWindow
+        recentRate = mean(memory.recentAccepted);
+        if recentRate < 0.2
+            score = score + params.userSetStagnationWindow;
+        end
+    end
+    level = sum(score >= thresholds);
+    level = min(level, params.userSetIntensificationMaxLevel);
     triggered = level > 0;
+    reason = sprintf('score=%.2f cf=%d stag=%d', score, memory.consecutiveFailures, memory.stagnationCount);
 end
 
 function memory = registerSwapOutcome(memory, bestPair, accepted, params)
+    memory.triggerCount = memory.triggerCount + 1;
     if isempty(bestPair) || ~isfield(bestPair, 'weakUser') || isempty(bestPair.weakUser) || isempty(bestPair.strongUser)
         if accepted
             memory.stagnationCount = 0;
+            memory.consecutiveFailures = 0;
         else
-            memory.stagnationCount = memory.stagnationCount + 1;
+            memory.stagnationCount = max(1, memory.stagnationCount + 1 - params.userSetStagnationDecay);
+            memory.consecutiveFailures = memory.consecutiveFailures + 1;
         end
+        memory = updateRecentMemory(memory, accepted);
         return;
     end
     key = pairKey(bestPair.weakUser, bestPair.strongUser, params.K);
     if accepted
         memory.failureCount(key) = max(0, memory.failureCount(key) - 1);
         memory.stagnationCount = 0;
+        memory.consecutiveFailures = 0;
+        memory.acceptedCount = memory.acceptedCount + 1;
     else
         memory.failureCount(key) = memory.failureCount(key) + 1;
         if memory.failureCount(key) >= params.userSetFailureToTabuThreshold
             memory.tabuCountdown(key) = max(memory.tabuCountdown(key), params.userSetTabuLength);
         end
-        memory.stagnationCount = memory.stagnationCount + 1;
+        memory.stagnationCount = max(1, memory.stagnationCount + 1 - params.userSetStagnationDecay);
+        memory.consecutiveFailures = memory.consecutiveFailures + 1;
     end
+    memory = updateRecentMemory(memory, accepted);
+end
+
+function memory = updateRecentMemory(memory, accepted)
+    if isempty(memory.recentAccepted)
+        return;
+    end
+    memory.recentAccepted = [memory.recentAccepted(2:end); double(accepted)];
 end
 
 function [stateOut, postGain, triggered] = postAcceptShortRefine(stateIn, params)
@@ -279,19 +380,67 @@ function [stateOut, postGain, triggered] = postAcceptShortRefine(stateIn, params
     end
 end
 
-function [stateOut, accepted] = tryLimitedSecondSwap(stateIn, params, memory, linLocal, loutLocal, topRefineLocal)
-    accepted = false;
+function [stateOut, info] = tryLimitedTwoSwapFromTopCandidates(stateIn, params, memory, weakUserPositions, weakUsers, strongExternal, currentScore, topRefineLocal, evaluatedPairs, bestOneDelta)
     stateOut = stateIn;
-    [weakPos2, weakUsers2] = selectWeakUsers(stateIn, params, linLocal);
-    [pool2, score2, ~, ~, ~, ~, ~] = buildDynamicCandidatePool(stateIn, params, weakPos2, weakUsers2, memory, 0);
-    [strong2, ~] = selectStrongExternalUsers(stateIn, stateIn.S, pool2, score2, max(2, min(loutLocal, params.userSetTwoSwapTopK)));
-    if isempty(weakPos2) || isempty(strong2)
+    info = struct('entered', true, 'evaluated', 0, 'bestOneDelta', bestOneDelta, ...
+        'bestTwoDelta', -inf, 'accepted', false, 'bestSequence', [], 'reason', 'noCandidate');
+    if isempty(evaluatedPairs)
         return;
     end
-    [bestState2, bestDelta2] = evaluateRestrictedSwapNeighborhood(stateIn, params, weakPos2, weakUsers2, strong2, score2, max(2, min(topRefineLocal, params.userSetTwoSwapTopK)));
-    if bestDelta2 >= params.epsilonS
-        stateOut = bestState2;
-        accepted = true;
+    [~, idxOrder] = sort([evaluatedPairs.deltaFinal], 'descend');
+    idxOrder = idxOrder(isfinite([evaluatedPairs(idxOrder).deltaFinal]));
+    if isempty(idxOrder)
+        return;
+    end
+    firstK = min(params.userSetTwoSwapTopK, numel(idxOrder));
+    idxOrder = idxOrder(1:firstK);
+    maxEval = params.userSetTwoSwapMaxCandidates;
+    bestState = stateIn;
+    bestDelta = -inf;
+    bestSeq = [];
+    evalCount = 0;
+    for i = 1:numel(idxOrder)
+        if evalCount >= maxEval
+            break;
+        end
+        p1 = evaluatedPairs(idxOrder(i));
+        if ~isfinite(p1.deltaFinal)
+            continue;
+        end
+        tempState = stateIn;
+        tempState.S = p1.candidateSet;
+        tempState.W = buildCandidateWCoarse(stateIn, params, tempState.S);
+        metrics1 = Signal_model('evaluate', stateIn, params, tempState.W, tempState.S);
+        if ~isfinite(metrics1.sumRate)
+            continue;
+        end
+        tempState.sinr = metrics1.sinr;
+        tempState.rate = metrics1.rate;
+        tempState.sumRate = metrics1.sumRate;
+        [weakPos2, weakUsers2] = selectWeakUsers(tempState, params, min(numel(weakUserPositions), params.userSetTwoSwapTopK));
+        [pool2, score2] = buildDynamicCandidatePool(tempState, params, weakPos2, weakUsers2, memory, params.userSetTwoSwapMinLevel);
+        [strong2, ~] = selectStrongExternalUsers(tempState, tempState.S, pool2, score2, min(numel(strongExternal), params.userSetTwoSwapTopK));
+        if isempty(weakPos2) || isempty(strong2)
+            continue;
+        end
+        [state2, delta2, ~, pair2] = evaluateRestrictedSwapNeighborhood(tempState, params, weakPos2, weakUsers2, strong2, score2, max(2, min(topRefineLocal, params.userSetTwoSwapTopK)));
+        evalCount = evalCount + 1;
+        totalDelta = state2.sumRate - stateIn.sumRate;
+        if ~isempty(pair2.weakUser) && totalDelta > bestDelta
+            bestDelta = totalDelta;
+            bestState = state2;
+            bestSeq = [p1.weakUser, p1.strongUser; pair2.weakUser, pair2.strongUser];
+        end
+    end
+    info.evaluated = evalCount;
+    info.bestTwoDelta = bestDelta;
+    info.bestSequence = bestSeq;
+    if isfinite(bestDelta) && bestDelta > max(bestOneDelta, params.epsilonS)
+        stateOut = bestState;
+        info.accepted = true;
+        info.reason = 'acceptedBetterThanOneSwap';
+    else
+        info.reason = 'notBetterThanOneSwap';
     end
 end
 
@@ -330,7 +479,10 @@ function out = getHeadPairDebug(weakUsers, poolOrdered, memory, params)
 end
 
 function d = emptyScoreDebug()
-    d = struct('dynamicScoreHead', [], 'scoreMode', 'none', 'tabuHeadPairs', [], 'penaltyHeadPairs', []);
+    d = struct('dynamicScoreHead', [], 'scoreMode', 'none', 'tabuHeadPairs', [], ...
+        'penaltyHeadPairs', [], 'baseVsDynHead', [], 'dynamicWeights', [], ...
+        'currentStateWeights', [], 'shortlistInfo', struct('enabled', false, 'poolSize', 0, 'shortlistSize', 0), ...
+        'stagnationMemory', struct('consecutiveFailures', 0, 'stagnationCount', 0, 'recentSuccessRate', 0));
 end
 
 function out = ternary(cond, a, b)
@@ -352,8 +504,8 @@ end
 
 function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUser, scoreTypeDetail, scoreDebug] = ...
     buildDynamicCandidatePool(state, params, weakUserPositions, weakUsers, userSetMemory, stagnationLevel)
-    scoreType = 'mixedDynamicScore';
-    scoreTypeDetail = 'base+channelPotential+weakReplacement+complementarity-penalty';
+    scoreType = 'currentStateDominantMixedScore';
+    scoreTypeDetail = 'normalized(currentStateDominant: channel+replacement+complementarity-penalty, base as weak prior)';
     weakAnchorUser = [];
     if ~isempty(weakUsers)
         weakAnchorUser = weakUsers(1);
@@ -388,8 +540,12 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     end
 
     weakRateProxy = zeros(params.K, 1);
-    if ~isempty(weakUserPositions)
-        weakRateProxy(externalAll) = max(state.rate(weakUserPositions)) - min(state.rate(weakUserPositions));
+    if ~isempty(weakUsers)
+        weakChannelLevel = channelPotential(weakUsers);
+        weakRef = mean(weakChannelLevel);
+        for u = externalAll(:).'
+            weakRateProxy(u) = channelPotential(u) - weakRef;
+        end
     end
 
     complementarity = zeros(params.K, 1);
@@ -408,21 +564,48 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         penaltyScore(externalAll) = penaltyScore(externalAll) + params.userSetRepeatFailurePenalty * userSetMemory.failureCount(keys);
     end
 
-    mixed = weightedNormalize(baseScore(externalAll), params.userSetDynamicScoreWeights(1)) + ...
-        weightedNormalize(channelPotential(externalAll), params.userSetDynamicScoreWeights(2)) + ...
-        weightedNormalize(weakRateProxy(externalAll), params.userSetDynamicScoreWeights(3)) + ...
-        weightedNormalize(complementarity(externalAll), params.userSetDynamicScoreWeights(4)) - ...
-        penaltyScore(externalAll);
-    if stagnationLevel >= 1
-        mixed = mixed + params.userSetDiversificationJitter * randn(size(mixed));
+    normMode = params.userSetDynamicScoreNormalizeMode;
+    if isempty(normMode)
+        normMode = params.userSetDynamicScoreNormalize;
     end
-    dynamicScore(externalAll) = mixed;
-
-    if params.userSetUseDynamicMixedScore
-        currentScore(externalAll) = dynamicScore(externalAll);
+    usePrescreen = params.userSetUseBasePrescreen && ~params.userSetCurrentStateDominantRanking;
+    if usePrescreen
+        shortlistN = min(numel(externalAll), max(params.userSetExternalShortlistSize, params.userSetDynamicRescoreTopK));
+        [~, baseOrder] = sort(baseScore(externalAll), 'descend');
+        shortlist = externalAll(baseOrder(1:shortlistN));
     else
-        currentScore(externalAll) = baseScore(externalAll);
+        shortlist = externalAll;
     end
+
+    baseN = normalizeScoreComponent(baseScore(shortlist), normMode);
+    chanN = normalizeScoreComponent(channelPotential(shortlist), normMode);
+    weakN = normalizeScoreComponent(weakRateProxy(shortlist), normMode);
+    compN = normalizeScoreComponent(complementarity(shortlist), normMode);
+    penN = normalizeScoreComponent(penaltyScore(shortlist), normMode);
+
+    currentStateWeights = getCurrentStateWeightsByLevel(params, stagnationLevel);
+    currentStateScore = currentStateWeights(1) * chanN + currentStateWeights(2) * weakN + ...
+        currentStateWeights(3) * compN - currentStateWeights(4) * penN;
+
+    baseWeight = params.userSetBaseScoreWeight * (0.75 ^ stagnationLevel);
+    weights = zeros(1, 5);
+    if params.userSetBaseScoreTieBreakOnly
+        mixed = currentStateScore + 1e-6 * baseN;
+        weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
+    elseif params.userSetCurrentStateDominantRanking
+        currWeight = max(params.userSetCurrentStateScoreWeight, 1 - baseWeight);
+        mixed = currWeight * currentStateScore + baseWeight * baseN;
+        weights = [baseWeight, currWeight * currentStateWeights(1), currWeight * currentStateWeights(2), ...
+            currWeight * currentStateWeights(3), currWeight * currentStateWeights(4)];
+    else
+        weights = getDynamicWeightsByLevel(params, stagnationLevel);
+        mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
+    end
+    if stagnationLevel >= params.userSetTwoSwapMinLevel
+        mixed = mixed + params.userSetDiversificationJitterScale * randn(size(mixed));
+    end
+    dynamicScore(shortlist) = mixed;
+    currentScore(shortlist) = dynamicScore(shortlist);
 
     tabuBlocked = false(size(externalAll));
     for idx = 1:numel(externalAll)
@@ -446,9 +629,26 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
 
     [~, order] = sort(currentScore(externalAll), 'descend');
     dynamicCandidatePool = externalAll(order);
+    [~, baseOrderAll] = sort(baseScore(dynamicCandidatePool), 'descend');
+    [~, dynOrderAll] = sort(currentScore(dynamicCandidatePool), 'descend');
+    baseRank = zeros(size(dynamicCandidatePool));
+    dynRank = zeros(size(dynamicCandidatePool));
+    baseRank(baseOrderAll) = 1:numel(dynamicCandidatePool);
+    dynRank(dynOrderAll) = 1:numel(dynamicCandidatePool);
+    headN = min(8, numel(dynamicCandidatePool));
+    baseVsDynHead = [dynamicCandidatePool(1:headN).', baseRank(1:headN).', dynRank(1:headN).'];
     scoreDebug = struct( ...
         'dynamicScoreHead', dynamicScore(dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)))).', ...
-        'scoreMode', ternary(params.userSetUseDynamicMixedScore, 'dynamicMixed', 'baseOnly'), ...
+        'scoreMode', ternary(params.userSetUseDynamicMixedScore, ...
+            ternary(params.userSetCurrentStateDominantRanking, 'currentStateDominant', 'dynamicMixed'), 'baseOnly'), ...
+        'dynamicWeights', weights(:).', ...
+        'currentStateWeights', currentStateWeights(:).', ...
+        'baseVsDynHead', baseVsDynHead, ...
+        'shortlistInfo', struct('enabled', usePrescreen, 'poolSize', numel(externalAll), ...
+                                'shortlistSize', numel(shortlist)), ...
+        'stagnationMemory', struct('consecutiveFailures', userSetMemory.consecutiveFailures, ...
+                                   'stagnationCount', userSetMemory.stagnationCount, ...
+                                   'recentSuccessRate', mean(userSetMemory.recentAccepted)), ...
         'tabuHeadPairs', getHeadPairDebug(weakUsers, dynamicCandidatePool, userSetMemory, params), ...
         'penaltyHeadPairs', penaltyScore(dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)))).');
 end
@@ -578,7 +778,13 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     end
 
     coarseDeltas = [pairData.deltaCoarse];
-    [~, order] = sort(coarseDeltas, 'descend');
+    strongScoreVec = [pairData.strongUserCurrentScore];
+    weakRateVec = [pairData.weakUserRate];
+    strongScoreNorm = normalizeScoreComponent(strongScoreVec, params.userSetDynamicScoreNormalize).';
+    weakRateNorm = normalizeScoreComponent(weakRateVec, params.userSetDynamicScoreNormalize).';
+    blended = coarseDeltas + params.userSetCoarsePredictiveBlend(1) * strongScoreNorm ...
+        - params.userSetCoarsePredictiveBlend(2) * weakRateNorm;
+    [~, order] = sort(blended, 'descend');
     refineIndices = order(1:numRefineCandidates);
     rankByCoarse = zeros(1, pairCount);
     rankByCoarse(order) = 1:pairCount;
@@ -840,4 +1046,96 @@ end
 function [invalid, powerVal] = isInvalidCandidateW(W, pmax)
     powerVal = real(trace(W * W'));
     invalid = any(~isfinite(W(:))) || ~isfinite(powerVal) || powerVal > pmax * (1 + 1e-6) || norm(W, 'fro') <= 1e-12;
+end
+
+function params = ensureUserSetParams(params)
+    params = setDefault(params, 'userSetCurrentStateDominantRanking', true);
+    params = setDefault(params, 'userSetBaseScoreWeight', 0.08);
+    params = setDefault(params, 'userSetCurrentStateScoreWeight', 0.92);
+    params = setDefault(params, 'userSetCurrentStateScoreWeightsByLevel', ...
+        [0.36, 0.28, 0.24, 0.12; ...
+         0.34, 0.30, 0.24, 0.12; ...
+         0.32, 0.32, 0.24, 0.12; ...
+         0.30, 0.34, 0.24, 0.12]);
+    params = setDefault(params, 'userSetBaseScoreTieBreakOnly', false);
+    params = setDefault(params, 'userSetExternalShortlistSize', 18);
+    params = setDefault(params, 'userSetUseBasePrescreen', false);
+    params = setDefault(params, 'userSetDynamicScoreNormalize', 'rank');
+    params = setDefault(params, 'userSetDynamicScoreNormalizeMode', 'rank');
+    params = setDefault(params, 'userSetDynamicScoreWeightsBase', [0.40, 0.25, 0.20, 0.10, 0.05]);
+    params = setDefault(params, 'userSetDynamicScoreWeightsLevel1', [0.28, 0.28, 0.22, 0.14, 0.08]);
+    params = setDefault(params, 'userSetDynamicScoreWeightsLevel2', [0.18, 0.30, 0.24, 0.18, 0.10]);
+    params = setDefault(params, 'userSetDynamicScoreWeightsLevel3', [0.10, 0.30, 0.26, 0.22, 0.12]);
+    params = setDefault(params, 'userSetStagnationEscalationThresholds', [3, 7, 11]);
+    params = setDefault(params, 'userSetStagnationDecay', 0);
+    params = setDefault(params, 'userSetIntensificationMaxLevel', 3);
+    params = setDefault(params, 'userSetEnableLimitedTwoSwap', true);
+    params = setDefault(params, 'userSetTwoSwapTopK', 3);
+    params = setDefault(params, 'userSetTwoSwapMinLevel', 2);
+    params = setDefault(params, 'userSetTwoSwapMaxCandidates', 4);
+    params = setDefault(params, 'userSetDynamicRescoreTopK', 12);
+    params = setDefault(params, 'userSetDiversificationJitterScale', 0.02);
+    params = setDefault(params, 'userSetCoarsePredictiveBlend', [0.20, 0.08]);
+end
+
+function params = setDefault(params, name, value)
+    if ~isfield(params, name) || isempty(params.(name))
+        params.(name) = value;
+    end
+end
+
+function w = getDynamicWeightsByLevel(params, level)
+    if level >= 3
+        w = params.userSetDynamicScoreWeightsLevel3;
+    elseif level == 2
+        w = params.userSetDynamicScoreWeightsLevel2;
+    elseif level == 1
+        w = params.userSetDynamicScoreWeightsLevel1;
+    else
+        w = params.userSetDynamicScoreWeightsBase;
+    end
+    w = w(:).';
+    if numel(w) < 5
+        w = [w, zeros(1, 5 - numel(w))];
+    end
+end
+
+function w = getCurrentStateWeightsByLevel(params, level)
+    tableW = params.userSetCurrentStateScoreWeightsByLevel;
+    if isvector(tableW)
+        w = tableW(:).';
+    else
+        idx = min(size(tableW, 1), max(1, level + 1));
+        w = tableW(idx, :);
+    end
+    w = w(:).';
+    if numel(w) < 4
+        w = [w, zeros(1, 4 - numel(w))];
+    end
+    s = sum(abs(w));
+    if s > 0
+        w = w / s;
+    end
+end
+
+function out = normalizeScoreComponent(v, mode)
+    if isempty(v)
+        out = v;
+        return;
+    end
+    v = v(:);
+    if strcmpi(char(mode), 'rank')
+            [~, ord] = sort(v, 'ascend');
+            rk = zeros(size(v));
+            rk(ord) = 1:numel(v);
+            out = (rk - 1) / max(1, numel(v) - 1);
+    else
+        vmin = min(v);
+        vmax = max(v);
+        if abs(vmax - vmin) < 1e-12
+            out = zeros(size(v));
+        else
+            out = (v - vmin) / (vmax - vmin);
+        end
+    end
 end
