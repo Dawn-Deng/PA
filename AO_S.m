@@ -260,6 +260,30 @@ function [state, info] = AO_S(state, params, t)
                 end
             end
             userSetMemory = registerSwapOutcome(userSetMemory, bestPair, false, params);
+            userSetMemory.lastBestDeltaFinal = bestDelta;
+            if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel
+                swapTrace(swapIter).limitedTwoSwapTried = true;
+                [state2, twoSwapInfo] = tryLimitedTwoSwapFromTopCandidates(state, params, userSetMemory, weakUserPositions, weakUsers, strongExternal, currentScore, topRefineLocal, evaluatedPairs, bestDelta);
+                swapTrace(swapIter).twoSwapEvaluated = twoSwapInfo.evaluated;
+                swapTrace(swapIter).twoSwapBestOneDelta = twoSwapInfo.bestOneDelta;
+                swapTrace(swapIter).twoSwapBestDelta = twoSwapInfo.bestTwoDelta;
+                swapTrace(swapIter).twoSwapBestSequence = twoSwapInfo.bestSequence;
+                swapTrace(swapIter).twoSwapReason = twoSwapInfo.reason;
+                info.twoSwap = twoSwapInfo;
+                if twoSwapInfo.accepted
+                    state = state2;
+                    swapTrace(swapIter).accepted = true;
+                    swapTrace(swapIter).limitedTwoSwapAccepted = true;
+                    swapTrace(swapIter).sumRateAfter = state.sumRate;
+                    swapTrace(swapIter).breakReason = '';
+                    info.acceptedSwaps = info.acceptedSwaps + 1;
+                    if ~isempty(twoSwapInfo.bestSequence)
+                        finalPair = twoSwapInfo.bestSequence(end, :);
+                        userSetMemory = registerSwapOutcome(userSetMemory, struct('weakUser', finalPair(1), 'strongUser', finalPair(2)), true, params);
+                    end
+                    continue;
+                end
+            end
             swapTrace(swapIter).accepted = false;
             swapTrace(swapIter).acceptedDelta = bestDelta;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
