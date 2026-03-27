@@ -82,10 +82,12 @@ function [state, info] = AO_S(state, params, t)
         'topRefinePairList', [], ...
         'limitedTwoSwapTried', false, ...
         'limitedTwoSwapAccepted', false, ...
+        'acceptedByTwoSwap', false, ...
         'twoSwapEvaluated', 0, ...
         'twoSwapBestOneDelta', -inf, ...
         'twoSwapBestDelta', -inf, ...
         'twoSwapBestSequence', [], ...
+        'acceptedDelta', -inf, ...
         'twoSwapReason', '', ...
         'postAcceptShortRefineTriggered', false, ...
         'postAcceptGain', 0, ...
@@ -206,6 +208,7 @@ function [state, info] = AO_S(state, params, t)
             swapTrace(swapIter).acceptedUsingRefine = evalSummary.bestCandidateUsedRefine;
             swapTrace(swapIter).acceptedSwapUserOut = bestPair.weakUser;
             swapTrace(swapIter).acceptedSwapUserIn = bestPair.strongUser;
+            swapTrace(swapIter).acceptedDelta = bestDelta;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = '';
             info.breakReason = '';
@@ -218,6 +221,44 @@ function [state, info] = AO_S(state, params, t)
 
             userSetMemory.lastBestDeltaFinal = bestDelta;
         else
+            userSetMemory.lastBestDeltaFinal = bestDelta;
+            if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel
+                swapTrace(swapIter).limitedTwoSwapTried = true;
+                [state2, twoSwapInfo] = tryLimitedTwoSwapFromTopCandidates(state, params, userSetMemory, weakUserPositions, weakUsers, strongExternal, currentScore, topRefineLocal, evaluatedPairs, bestDelta);
+                swapTrace(swapIter).twoSwapEvaluated = twoSwapInfo.evaluated;
+                swapTrace(swapIter).twoSwapBestOneDelta = twoSwapInfo.bestOneDelta;
+                swapTrace(swapIter).twoSwapBestDelta = twoSwapInfo.bestTwoDelta;
+                swapTrace(swapIter).twoSwapBestSequence = twoSwapInfo.bestSequence;
+                swapTrace(swapIter).twoSwapReason = twoSwapInfo.reason;
+                info.twoSwap = twoSwapInfo;
+                if twoSwapInfo.accepted
+                    state = state2;
+                    swapTrace(swapIter).accepted = true;
+                    swapTrace(swapIter).limitedTwoSwapAccepted = true;
+                    swapTrace(swapIter).acceptedByTwoSwap = true;
+                    swapTrace(swapIter).acceptedDelta = twoSwapInfo.bestTwoDelta;
+                    swapTrace(swapIter).bestDelta = twoSwapInfo.bestTwoDelta;
+                    swapTrace(swapIter).bestDeltaFinal = twoSwapInfo.bestTwoDelta;
+                    swapTrace(swapIter).bestDeltaMinusEpsilonS = twoSwapInfo.bestTwoDelta - params.epsilonS;
+                    swapTrace(swapIter).numCandidatesAboveEpsilonS = max(1, swapTrace(swapIter).numCandidatesAboveEpsilonS);
+                    if ~isempty(twoSwapInfo.bestSequence)
+                        swapTrace(swapIter).bestPair = struct('weakUser', twoSwapInfo.bestSequence(end, 1), ...
+                            'strongUser', twoSwapInfo.bestSequence(end, 2), 'position', []);
+                        swapTrace(swapIter).acceptedSwapUserOut = twoSwapInfo.bestSequence(end, 1);
+                        swapTrace(swapIter).acceptedSwapUserIn = twoSwapInfo.bestSequence(end, 2);
+                    end
+                    swapTrace(swapIter).sumRateAfter = state.sumRate;
+                    swapTrace(swapIter).breakReason = '';
+                    info.acceptedSwaps = info.acceptedSwaps + 1;
+                    if ~isempty(twoSwapInfo.bestSequence)
+                        finalPair = twoSwapInfo.bestSequence(end, :);
+                        userSetMemory = registerSwapOutcome(userSetMemory, struct('weakUser', finalPair(1), 'strongUser', finalPair(2)), true, params);
+                    else
+                        userSetMemory = registerSwapOutcome(userSetMemory, bestPair, true, params);
+                    end
+                    continue;
+                end
+            end
             userSetMemory = registerSwapOutcome(userSetMemory, bestPair, false, params);
             userSetMemory.lastBestDeltaFinal = bestDelta;
             if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel
@@ -244,6 +285,7 @@ function [state, info] = AO_S(state, params, t)
                 end
             end
             swapTrace(swapIter).accepted = false;
+            swapTrace(swapIter).acceptedDelta = bestDelta;
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = 'bestDeltaBelowThreshold';
             info.breakReason = 'bestDeltaBelowThreshold';
@@ -522,8 +564,12 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     end
 
     weakRateProxy = zeros(params.K, 1);
-    if ~isempty(weakUserPositions)
-        weakRateProxy(externalAll) = max(state.rate(weakUserPositions)) - min(state.rate(weakUserPositions));
+    if ~isempty(weakUsers)
+        weakChannelLevel = channelPotential(weakUsers);
+        weakRef = mean(weakChannelLevel);
+        for u = externalAll(:).'
+            weakRateProxy(u) = channelPotential(u) - weakRef;
+        end
     end
 
     complementarity = zeros(params.K, 1);
@@ -546,7 +592,7 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     if isempty(normMode)
         normMode = params.userSetDynamicScoreNormalize;
     end
-    usePrescreen = params.userSetUseBasePrescreen;
+    usePrescreen = params.userSetUseBasePrescreen && ~params.userSetCurrentStateDominantRanking;
     if usePrescreen
         shortlistN = min(numel(externalAll), max(params.userSetExternalShortlistSize, params.userSetDynamicRescoreTopK));
         [~, baseOrder] = sort(baseScore(externalAll), 'descend');
@@ -1037,7 +1083,7 @@ function params = ensureUserSetParams(params)
          0.30, 0.34, 0.24, 0.12]);
     params = setDefault(params, 'userSetBaseScoreTieBreakOnly', false);
     params = setDefault(params, 'userSetExternalShortlistSize', 18);
-    params = setDefault(params, 'userSetUseBasePrescreen', true);
+    params = setDefault(params, 'userSetUseBasePrescreen', false);
     params = setDefault(params, 'userSetDynamicScoreNormalize', 'rank');
     params = setDefault(params, 'userSetDynamicScoreNormalizeMode', 'rank');
     params = setDefault(params, 'userSetDynamicScoreWeightsBase', [0.40, 0.25, 0.20, 0.10, 0.05]);
