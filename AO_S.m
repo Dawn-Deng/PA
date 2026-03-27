@@ -29,6 +29,7 @@ function [state, info] = AO_S(state, params, t)
         'dynamicWeights', [], ...
         'currentStateWeights', [], ...
         'shortlistInfo', struct(), ...
+        'scoreFlow', struct(), ...
         'twoSwap', struct(), ...
         'breakReason', 'notTriggered');
 
@@ -77,6 +78,7 @@ function [state, info] = AO_S(state, params, t)
         'dynamicWeights', [], ...
         'currentStateWeights', [], ...
         'shortlistInfo', struct(), ...
+        'scoreFlow', struct(), ...
         'topRefineCoarseRanks', [], ...
         'topRefineFinalRanks', [], ...
         'topRefinePairList', [], ...
@@ -88,6 +90,7 @@ function [state, info] = AO_S(state, params, t)
         'twoSwapBestDelta', -inf, ...
         'twoSwapBestSequence', [], ...
         'acceptedDelta', -inf, ...
+        'acceptedPairScoreDecomp', struct(), ...
         'twoSwapReason', '', ...
         'postAcceptShortRefineTriggered', false, ...
         'postAcceptGain', 0, ...
@@ -128,6 +131,7 @@ function [state, info] = AO_S(state, params, t)
         info.dynamicWeights = scoreDebug.dynamicWeights;
         info.currentStateWeights = scoreDebug.currentStateWeights;
         info.shortlistInfo = scoreDebug.shortlistInfo;
+        info.scoreFlow = scoreDebug.scoreFlow;
         info.twoSwap = struct();
         info.weakAnchorUser = weakAnchorUser;
         info.weakAnchorSet = weakUsers;
@@ -154,6 +158,7 @@ function [state, info] = AO_S(state, params, t)
         swapTrace(swapIter).dynamicWeights = scoreDebug.dynamicWeights;
         swapTrace(swapIter).currentStateWeights = scoreDebug.currentStateWeights;
         swapTrace(swapIter).shortlistInfo = scoreDebug.shortlistInfo;
+        swapTrace(swapIter).scoreFlow = scoreDebug.scoreFlow;
         swapTrace(swapIter).weakAnchorUser = weakAnchorUser;
         swapTrace(swapIter).weakAnchorSet = weakUsers;
         swapTrace(swapIter).bestWeakForPoolHead = bestWeakForPoolHead;
@@ -209,6 +214,7 @@ function [state, info] = AO_S(state, params, t)
             swapTrace(swapIter).acceptedSwapUserOut = bestPair.weakUser;
             swapTrace(swapIter).acceptedSwapUserIn = bestPair.strongUser;
             swapTrace(swapIter).acceptedDelta = bestDelta;
+            swapTrace(swapIter).acceptedPairScoreDecomp = lookupCandidateScoreDecomp(scoreDebug, bestPair.strongUser);
             swapTrace(swapIter).sumRateAfter = state.sumRate;
             swapTrace(swapIter).breakReason = '';
             info.breakReason = '';
@@ -246,6 +252,7 @@ function [state, info] = AO_S(state, params, t)
                             'strongUser', twoSwapInfo.bestSequence(end, 2), 'position', []);
                         swapTrace(swapIter).acceptedSwapUserOut = twoSwapInfo.bestSequence(end, 1);
                         swapTrace(swapIter).acceptedSwapUserIn = twoSwapInfo.bestSequence(end, 2);
+                        swapTrace(swapIter).acceptedPairScoreDecomp = lookupCandidateScoreDecomp(scoreDebug, twoSwapInfo.bestSequence(end, 2));
                     end
                     swapTrace(swapIter).sumRateAfter = state.sumRate;
                     swapTrace(swapIter).breakReason = '';
@@ -506,6 +513,7 @@ function d = emptyScoreDebug()
     d = struct('dynamicScoreHead', [], 'scoreMode', 'none', 'tabuHeadPairs', [], ...
         'penaltyHeadPairs', [], 'baseVsDynHead', [], 'dynamicWeights', [], ...
         'currentStateWeights', [], 'shortlistInfo', struct('enabled', false, 'poolSize', 0, 'shortlistSize', 0), ...
+        'scoreFlow', struct(), 'candidateScoreTable', struct(), ...
         'stagnationMemory', struct('consecutiveFailures', 0, 'stagnationCount', 0, 'recentSuccessRate', 0));
 end
 
@@ -567,8 +575,11 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     if ~isempty(weakUsers)
         weakChannelLevel = channelPotential(weakUsers);
         weakRef = mean(weakChannelLevel);
+        Hweak = state.channelMatrix(weakUsers, :);
         for u = externalAll(:).'
-            weakRateProxy(u) = channelPotential(u) - weakRef;
+            hu = state.channelMatrix(u, :).';
+            weakAlign = mean(abs(Hweak * hu));
+            weakRateProxy(u) = (channelPotential(u) - weakRef) + 0.25 * weakAlign;
         end
     end
 
@@ -601,17 +612,22 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         shortlist = externalAll;
     end
 
-    baseN = normalizeScoreComponent(baseScore(shortlist), normMode);
-    chanN = normalizeScoreComponent(channelPotential(shortlist), normMode);
-    weakN = normalizeScoreComponent(weakRateProxy(shortlist), normMode);
-    compN = normalizeScoreComponent(complementarity(shortlist), normMode);
-    penN = normalizeScoreComponent(penaltyScore(shortlist), normMode);
+    baseRaw = baseScore(shortlist);
+    chanRaw = channelPotential(shortlist);
+    weakRaw = weakRateProxy(shortlist);
+    compRaw = complementarity(shortlist);
+    penRaw = penaltyScore(shortlist);
+    baseN = normalizeScoreComponent(baseRaw, normMode);
+    chanN = normalizeScoreComponent(chanRaw, normMode);
+    weakN = normalizeScoreComponent(weakRaw, normMode);
+    compN = normalizeScoreComponent(compRaw, normMode);
+    penN = normalizeScoreComponent(penRaw, normMode);
 
     currentStateWeights = getCurrentStateWeightsByLevel(params, stagnationLevel);
     currentStateScore = currentStateWeights(1) * chanN + currentStateWeights(2) * weakN + ...
         currentStateWeights(3) * compN - currentStateWeights(4) * penN;
 
-    baseWeight = params.userSetBaseScoreWeight * (0.75 ^ stagnationLevel);
+    baseWeight = params.userSetBaseScoreWeight * (0.6 ^ stagnationLevel);
     weights = zeros(1, 5);
     if params.userSetBaseScoreTieBreakOnly
         mixed = currentStateScore + 1e-6 * baseN;
@@ -670,6 +686,10 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
         'baseVsDynHead', baseVsDynHead, ...
         'shortlistInfo', struct('enabled', usePrescreen, 'poolSize', numel(externalAll), ...
                                 'shortlistSize', numel(shortlist)), ...
+        'scoreFlow', buildScoreFlowDebug(dynamicCandidatePool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, ...
+                        baseN, chanN, weakN, compN, penN, currentScore, dynamicScore), ...
+        'candidateScoreTable', buildCandidateScoreTable(shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, ...
+                        baseN, chanN, weakN, compN, penN, currentScore), ...
         'stagnationMemory', struct('consecutiveFailures', userSetMemory.consecutiveFailures, ...
                                    'stagnationCount', userSetMemory.stagnationCount, ...
                                    'recentSuccessRate', mean(userSetMemory.recentAccepted)), ...
@@ -1084,8 +1104,8 @@ function params = ensureUserSetParams(params)
     params = setDefault(params, 'userSetBaseScoreTieBreakOnly', false);
     params = setDefault(params, 'userSetExternalShortlistSize', 18);
     params = setDefault(params, 'userSetUseBasePrescreen', false);
-    params = setDefault(params, 'userSetDynamicScoreNormalize', 'rank');
-    params = setDefault(params, 'userSetDynamicScoreNormalizeMode', 'rank');
+    params = setDefault(params, 'userSetDynamicScoreNormalize', 'zscore');
+    params = setDefault(params, 'userSetDynamicScoreNormalizeMode', 'zscore');
     params = setDefault(params, 'userSetDynamicScoreWeightsBase', [0.40, 0.25, 0.20, 0.10, 0.05]);
     params = setDefault(params, 'userSetDynamicScoreWeightsLevel1', [0.28, 0.28, 0.22, 0.14, 0.08]);
     params = setDefault(params, 'userSetDynamicScoreWeightsLevel2', [0.18, 0.30, 0.24, 0.18, 0.10]);
@@ -1148,11 +1168,20 @@ function out = normalizeScoreComponent(v, mode)
         return;
     end
     v = v(:);
-    if strcmpi(char(mode), 'rank')
+    mode = char(mode);
+    if strcmpi(mode, 'rank')
             [~, ord] = sort(v, 'ascend');
             rk = zeros(size(v));
             rk(ord) = 1:numel(v);
             out = (rk - 1) / max(1, numel(v) - 1);
+    elseif strcmpi(mode, 'zscore')
+        mu = mean(v);
+        sd = std(v);
+        if sd < 1e-12
+            out = zeros(size(v));
+        else
+            out = (v - mu) / sd;
+        end
     else
         vmin = min(v);
         vmax = max(v);
@@ -1162,4 +1191,51 @@ function out = normalizeScoreComponent(v, mode)
             out = (v - vmin) / (vmax - vmin);
         end
     end
+end
+
+function flow = buildScoreFlowDebug(dynamicPool, shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentScore, dynamicScore)
+    head = dynamicPool(1:min(8, numel(dynamicPool)));
+    flow = struct();
+    flow.rankCandidates = head(:).';
+    flow.rawBase = fetchValuesByCandidate(head, shortlist, baseRaw);
+    flow.rawChannel = fetchValuesByCandidate(head, shortlist, chanRaw);
+    flow.rawWeakProxy = fetchValuesByCandidate(head, shortlist, weakRaw);
+    flow.rawComplementarity = fetchValuesByCandidate(head, shortlist, compRaw);
+    flow.rawPenalty = fetchValuesByCandidate(head, shortlist, penRaw);
+    flow.normBase = fetchValuesByCandidate(head, shortlist, baseN);
+    flow.normChannel = fetchValuesByCandidate(head, shortlist, chanN);
+    flow.normWeakProxy = fetchValuesByCandidate(head, shortlist, weakN);
+    flow.normComplementarity = fetchValuesByCandidate(head, shortlist, compN);
+    flow.normPenalty = fetchValuesByCandidate(head, shortlist, penN);
+    flow.finalMixed = currentScore(head).';
+    flow.dynamicMixed = dynamicScore(head).';
+end
+
+function table = buildCandidateScoreTable(shortlist, baseRaw, chanRaw, weakRaw, compRaw, penRaw, baseN, chanN, weakN, compN, penN, currentScore)
+    table = struct('users', shortlist(:).', 'baseRaw', baseRaw(:).', 'chanRaw', chanRaw(:).', ...
+        'weakRaw', weakRaw(:).', 'compRaw', compRaw(:).', 'penRaw', penRaw(:).', ...
+        'baseNorm', baseN(:).', 'chanNorm', chanN(:).', 'weakNorm', weakN(:).', ...
+        'compNorm', compN(:).', 'penNorm', penN(:).', 'finalMixed', currentScore(shortlist).');
+end
+
+function vals = fetchValuesByCandidate(cands, shortlist, vec)
+    vals = nan(1, numel(cands));
+    [tf, loc] = ismember(cands, shortlist);
+    vals(tf) = vec(loc(tf));
+end
+
+function decomp = lookupCandidateScoreDecomp(scoreDebug, userId)
+    decomp = struct();
+    if ~isfield(scoreDebug, 'candidateScoreTable') || isempty(scoreDebug.candidateScoreTable) || isempty(userId)
+        return;
+    end
+    table = scoreDebug.candidateScoreTable;
+    idx = find(table.users == userId, 1);
+    if isempty(idx)
+        return;
+    end
+    decomp = struct('user', userId, 'baseRaw', table.baseRaw(idx), 'chanRaw', table.chanRaw(idx), ...
+        'weakRaw', table.weakRaw(idx), 'compRaw', table.compRaw(idx), 'penRaw', table.penRaw(idx), ...
+        'baseNorm', table.baseNorm(idx), 'chanNorm', table.chanNorm(idx), 'weakNorm', table.weakNorm(idx), ...
+        'compNorm', table.compNorm(idx), 'penNorm', table.penNorm(idx), 'finalMixed', table.finalMixed(idx));
 end
