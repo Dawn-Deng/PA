@@ -24,8 +24,10 @@ paramsOverride.KServ = paramsOverride.N;
 % 保持 clustered 用户分布
 paramsOverride.userGeneration = struct();
 paramsOverride.userGeneration.mode = 'clustered';
-paramsOverride.userGeneration.hotspotCenters = [3, 8; 7, 10];
-paramsOverride.userGeneration.hotspotStd = [0.8, 1.0];
+paramsOverride.randomSeed = 20260328;
+paramsOverride.symbolSeed = 20260429; % seed + 101
+paramsOverride.userGeneration.hotspotCenters = [2.2, 7.0; 5.0, 9.0; 7.8, 11.0];
+paramsOverride.userGeneration.hotspotStd = [0.5, 0.7];
 paramsOverride.userRegionY = [6, 12];
 
 % 给 AO 和 WMMSE 多一点迭代空间
