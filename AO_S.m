@@ -288,6 +288,9 @@ function memory = initializeUserSetMemory(state, params)
         return;
     end
     keySize = params.K * params.K;
+    % lastLevel is intentionally reserved for future extensions (e.g.,
+    % level-hysteresis / anti-oscillation / level logging). It is not a
+    % required signal in the current main AO_S flow.
     memory = struct( ...
         'failureCount', zeros(keySize, 1), ...
         'tabuCountdown', zeros(keySize, 1), ...
@@ -486,8 +489,8 @@ end
 
 function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUser, scoreTypeDetail, scoreDebug] = ...
     buildDynamicCandidatePool(state, params, weakUserPositions, weakUsers, userSetMemory, stagnationLevel)
-    scoreType = 'currentStateDominantMixedScore';
-    scoreTypeDetail = 'normalized(currentStateDominant: channel+replacement+complementarity-penalty, base as weak prior)';
+    scoreType = '';
+    scoreTypeDetail = '';
     weakAnchorUser = [];
     if ~isempty(weakUsers)
         weakAnchorUser = weakUsers(1);
@@ -586,11 +589,15 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     if params.userSetCurrentStateDominantRanking
         weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
         mixed = currentStateScore + 1e-6 * baseN; % base score only serves as tie-break/diagnostic prior.
-        scoreMode = ternary(params.userSetBaseScoreTieBreakOnly, 'currentStateDominant(tieBreakBase)', 'currentStateDominant');
+        scoreMode = 'currentStateDominant';
+        scoreType = 'currentStateDominant';
+        scoreTypeDetail = 'normalized(channel+weakReplacement+complementarity-penalty), with fixed tiny base prior for tie-break';
     else
         weights = getDynamicWeightsByLevel(params, stagnationLevel);
         mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
         scoreMode = 'dynamicMixed(fallback)';
+        scoreType = 'dynamicMixedFallback';
+        scoreTypeDetail = 'normalized(base+channel+weakReplacement+complementarity-penalty) with level-dependent dynamic weights';
     end
     if stagnationLevel >= params.userSetTwoSwapMinLevel
         jitterRaw = params.userSetDiversificationJitterScale * randn(size(mixed));
@@ -1071,13 +1078,13 @@ function params = ensureUserSetParams(params)
     % Deprecated compatibility note:
     % - userSetUseDynamicMixedScore is kept for old configs but ignored.
     % - current branch switching is controlled only by userSetCurrentStateDominantRanking.
+    % - userSetBaseScoreTieBreakOnly is kept for old configs but ignored.
     % - userSetBaseScoreWeight / userSetCurrentStateScoreWeight are no longer used.
     params = setDefault(params, 'userSetCurrentStateScoreWeightsByLevel', ...
         [0.18, 0.34, 0.34, 0.14; ...
          0.16, 0.34, 0.36, 0.14; ...
          0.14, 0.34, 0.38, 0.14; ...
          0.12, 0.34, 0.40, 0.14]);
-    params = setDefault(params, 'userSetBaseScoreTieBreakOnly', false);
     params = setDefault(params, 'userSetExternalShortlistSize', 18);
     params = setDefault(params, 'userSetUseBasePrescreen', false);
     params = setDefault(params, 'userSetDynamicScoreNormalize', 'zscore');
