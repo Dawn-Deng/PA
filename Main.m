@@ -10,16 +10,16 @@ paramsOverride.verbosity = 1;
 % 更友好的场景强度
 paramsOverride.Pmax = 10;
 paramsOverride.sigma2 = 1e-6;
-paramsOverride.alphaW = 0.03;
+paramsOverride.alphaW = 0.01;
 paramsOverride.alphaL = 0.985;
 
 % 静态候选池快速调试配置（中等规模）：NRF = N, KServ = NRF = N
 paramsOverride.N = 8;
 paramsOverride.M = 6;
 paramsOverride.K = 64;
-paramsOverride.NRF = paramsOverride.N;
-paramsOverride.Kmax = paramsOverride.N;
-paramsOverride.KServ = paramsOverride.N;
+paramsOverride.NRF = 8;
+paramsOverride.Kmax = 8;
+paramsOverride.KServ = 8;
 
 % 保持 clustered 用户分布
 paramsOverride.userGeneration = struct();

@@ -67,12 +67,12 @@ function [params, state, info] = initializeSystem(paramsOverride)
 end
 
 function params = defaultParameters()
-    params.N = 4;
-    params.M = 8;
+    params.N = 8;
+    params.M = 6;
     params.K = 64;
-    params.NRF = 4;
-    params.Kmax = 4;
-    params.KServ = min(params.NRF, params.Kmax);
+    params.NRF = 8;
+    params.Kmax = 8;
+    params.KServ = 8;
 
     params.Dx = 10;
     params.Dy = 10;
