@@ -10,7 +10,7 @@ paramsOverride.verbosity = 1;
 % 更友好的场景强度
 paramsOverride.Pmax = 10;
 paramsOverride.sigma2 = 1e-6;
-paramsOverride.alphaW = 0.03;
+paramsOverride.alphaW = 0.01;
 paramsOverride.alphaL = 0.985;
 
 % 静态候选池快速调试配置（中等规模）：NRF = N, KServ = NRF = N

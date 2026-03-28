@@ -350,7 +350,7 @@ function fig = plot_geometry_figures(results)
         users = get_nested(results, {'channelInfo','users'}, []);
     end
 
-    xW = zeros(1, N);
+    xW = zeros(N, 1);
     for n = 1:N
         xW(n) = ((2*n - 1) / (2*N)) * Dx;
     end
@@ -399,17 +399,32 @@ function fig = plot_geometry_figures(results)
         scatter(xW, zeros(size(xW)), 36, 'k', '^', 'filled', 'DisplayName', 'Waveguides');
 
         % PA 位置 pa=[xW; X(m,n); d] -> 画平面 (xW, X)
-        [Xg, Yg] = meshgrid(xW, 1:M);
-        paY = X(:,:).'; % N x M
-        scatter(repmat(xW(:), M, 1), paY(:), 22, [0 0.45 0.74], 'filled', 'DisplayName', 'PAs');
+        paX = repmat(xW, 1, M); % N x M
+        paY = X.';              % N x M
+        scatter(paX(:), paY(:), 22, [0 0.45 0.74], 'filled', 'DisplayName', 'PAs');
 
         % 朝向箭头（可选）
         if ~isempty(theta) && ~isempty(phi) && isequal(size(theta), size(X)) && isequal(size(phi), size(X))
-            u = cos(phi(:));
-            v = sin(phi(:));
-            baseX = repmat(xW(:), M, 1);
-            baseY = X(:);
-            quiver(baseX, baseY, 0.2*u, 0.2*v, 0, 'Color', [0.2 0.2 0.2], 'MaxHeadSize', 0.8, 'DisplayName', 'Orientation');
+            thetaNM = theta.'; % N x M
+            phiNM = phi.';     % N x M
+            dirX = sin(thetaNM) .* cos(phiNM);
+            dirY = sin(thetaNM) .* sin(phiNM);
+
+            px = paX(:);
+            py = paY(:);
+            dx = dirX(:);
+            dy = dirY(:);
+            projNorm = hypot(dx, dy);
+            mask = projNorm > 1e-3;
+
+            if any(mask)
+                dxn = dx(mask) ./ projNorm(mask);
+                dyn = dy(mask) ./ projNorm(mask);
+                arrowScale = 0.18;
+                quiver(px(mask), py(mask), arrowScale * dxn, arrowScale * dyn, 0, ...
+                    'Color', [0.2 0.2 0.2], 'LineWidth', 0.9, 'MaxHeadSize', 0.45, ...
+                    'AutoScale', 'off', 'DisplayName', 'Orientation');
+            end
         end
 
         title(phaseTitles{p});
