@@ -103,7 +103,7 @@ function [state, info] = AO_S(state, params, t)
 
     for swapIter = 1:params.maxSwapPerUpdate
         sumRateBefore = state.sumRate;
-        userSetMemory = decayTabuMemory(userSetMemory);
+        userSetMemory = decayTabuMemory(userSetMemory, params);
         [stagnationLevel, intensificationTriggered, levelReason] = getStagnationLevel(userSetMemory, params);
         localLin = params.Lin + stagnationLevel * params.userSetExpandLinPerLevel;
         localLout = params.Lout + stagnationLevel * params.userSetExpandLoutPerLevel;
@@ -296,15 +296,14 @@ function memory = initializeUserSetMemory(state, params)
         'triggerCount', 0, ...
         'acceptedCount', 0, ...
         'recentAccepted', zeros(params.userSetStagnationWindow, 1), ...
-        'recentBestDelta', zeros(params.userSetStagnationWindow, 1), ...
         'lastBestDeltaFinal', -inf, ...
         'lastLevel', 0);
 end
 
-function memory = decayTabuMemory(memory)
+function memory = decayTabuMemory(memory, params)
     memory.tabuCountdown = max(memory.tabuCountdown - 1, 0);
     if isfield(memory, 'stagnationCount')
-        memory.stagnationCount = max(0, memory.stagnationCount - 0);
+        memory.stagnationCount = max(0, memory.stagnationCount - params.userSetStagnationDecay);
     end
 end
 
@@ -440,22 +439,6 @@ function [stateOut, info] = tryLimitedTwoSwapFromTopCandidates(stateIn, params, 
     else
         info.reason = 'notBetterThanOneSwap';
     end
-end
-
-function out = weightedNormalize(v, w)
-    if isempty(v)
-        out = v;
-        return;
-    end
-    v = v(:);
-    mu = mean(v);
-    sd = std(v);
-    if ~isfinite(sd) || sd < 1e-12
-        z = zeros(size(v));
-    else
-        z = (v - mu) / sd;
-    end
-    out = w * z;
 end
 
 function key = pairKey(weakUser, strongUser, K)
@@ -596,16 +579,18 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
 
     jitterRaw = zeros(size(baseN));
     jitterN = zeros(size(baseN));
-    weights = zeros(1, 5);
-    if params.userSetBaseScoreTieBreakOnly
-        mixed = currentStateScore + 1e-6 * baseN;
+
+    % Current primary branch: currentStateDominant.
+    % - currentStateDominantRanking = true  -> main online ranking mode.
+    % - currentStateDominantRanking = false -> fallback A/B branch (dynamicMixed).
+    if params.userSetCurrentStateDominantRanking
         weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
-    elseif params.userSetCurrentStateDominantRanking
-        mixed = currentStateScore + 1e-6 * baseN;
-        weights = [1e-6, currentStateWeights(1), currentStateWeights(2), currentStateWeights(3), currentStateWeights(4)];
+        mixed = currentStateScore + 1e-6 * baseN; % base score only serves as tie-break/diagnostic prior.
+        scoreMode = ternary(params.userSetBaseScoreTieBreakOnly, 'currentStateDominant(tieBreakBase)', 'currentStateDominant');
     else
         weights = getDynamicWeightsByLevel(params, stagnationLevel);
         mixed = weights(1) * baseN + weights(2) * chanN + weights(3) * weakN + weights(4) * compN - weights(5) * penN;
+        scoreMode = 'dynamicMixed(fallback)';
     end
     if stagnationLevel >= params.userSetTwoSwapMinLevel
         jitterRaw = params.userSetDiversificationJitterScale * randn(size(mixed));
@@ -647,8 +632,7 @@ function [dynamicCandidatePool, currentScore, scoreType, baseScore, weakAnchorUs
     baseVsDynHead = [dynamicCandidatePool(1:headN).', baseRank(1:headN).', dynRank(1:headN).'];
     scoreDebug = struct( ...
         'dynamicScoreHead', dynamicScore(dynamicCandidatePool(1:min(10, numel(dynamicCandidatePool)))).', ...
-        'scoreMode', ternary(params.userSetUseDynamicMixedScore, ...
-            ternary(params.userSetCurrentStateDominantRanking, 'currentStateDominant', 'dynamicMixed'), 'baseOnly'), ...
+        'scoreMode', scoreMode, ...
         'dynamicWeights', weights(:).', ...
         'currentStateWeights', currentStateWeights(:).', ...
         'baseVsDynHead', baseVsDynHead, ...
@@ -1084,8 +1068,10 @@ function params = ensureUserSetParams(params)
     end
 
     params = setDefault(params, 'userSetCurrentStateDominantRanking', true);
-    params = setDefault(params, 'userSetBaseScoreWeight', 0.08);
-    params = setDefault(params, 'userSetCurrentStateScoreWeight', 0.92);
+    % Deprecated compatibility note:
+    % - userSetUseDynamicMixedScore is kept for old configs but ignored.
+    % - current branch switching is controlled only by userSetCurrentStateDominantRanking.
+    % - userSetBaseScoreWeight / userSetCurrentStateScoreWeight are no longer used.
     params = setDefault(params, 'userSetCurrentStateScoreWeightsByLevel', ...
         [0.18, 0.34, 0.34, 0.14; ...
          0.16, 0.34, 0.36, 0.14; ...
