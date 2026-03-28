@@ -46,6 +46,7 @@ function [params, state, info] = initializeSystem(paramsOverride)
 
     params = defaultParameters();
     params = applyOverrides(params, paramsOverride);
+    params = scaleSystemSizeFromK(params);
     validateParameters(params); % 工程化增强：统一参数校验
 
     state = struct();
@@ -67,12 +68,20 @@ function [params, state, info] = initializeSystem(paramsOverride)
 end
 
 function params = defaultParameters()
-    params.N = 4;
-    params.M = 8;
+    params.N = 8;
+    params.M = 6;
     params.K = 64;
-    params.NRF = 4;
-    params.Kmax = 4;
-    params.KServ = min(params.NRF, params.Kmax);
+    params.NRF = 8;
+    params.Kmax = 8;
+    params.KServ = 8;
+
+    % 工程化增强：按 K 自动缩放系统规模（默认开启）
+    params.scaleWithK = true;
+    params.usersPerWaveguide = 8;      % K=64 -> N=8 的基准比例
+    params.MPerWaveguide = 6;          % 每条波导上的 PA 基准值
+    params.scaleNRFWithN = true;       % NRF = N
+    params.scaleKmaxWithN = true;      % Kmax = N
+    params.scaleKServAsMin = true;     % KServ = min(NRF, Kmax)
 
     params.Dx = 10;
     params.Dy = 10;
@@ -172,6 +181,35 @@ function params = defaultParameters()
     params.verbosity = 1;
     params.saveResults = false;
     params.savePath = 'results_latest.mat';
+end
+
+function params = scaleSystemSizeFromK(params)
+    if ~isfield(params, 'scaleWithK') || ~params.scaleWithK
+        return;
+    end
+
+    usersPerWaveguide = max(1, round(params.usersPerWaveguide));
+    params.N = max(1, ceil(params.K / usersPerWaveguide));
+
+    if isfield(params, 'MPerWaveguide') && ~isempty(params.MPerWaveguide)
+        params.M = max(1, round(params.MPerWaveguide));
+    end
+
+    if isfield(params, 'scaleNRFWithN') && params.scaleNRFWithN
+        params.NRF = params.N;
+    end
+    if isfield(params, 'scaleKmaxWithN') && params.scaleKmaxWithN
+        params.Kmax = params.N;
+    end
+    if ~isfield(params, 'KServ') || (isfield(params, 'scaleKServAsMin') && params.scaleKServAsMin)
+        params.KServ = min(params.NRF, params.Kmax);
+    end
+
+    % 几何约束自动兼容：确保 Dy >= (M-1)*deltaMin
+    minDy = (params.M - 1) * params.deltaMin;
+    if params.Dy < minDy
+        params.Dy = minDy;
+    end
 end
 
 function params = applyOverrides(params, override)
