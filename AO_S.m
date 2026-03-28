@@ -785,6 +785,8 @@ function [bestState, bestDelta, evaluatedPairs, bestPair, evalSummary] = evaluat
     weakRateVec = [pairData.weakUserRate];
     strongScoreNorm = normalizeScoreComponent(strongScoreVec, params.userSetDynamicScoreNormalize).';
     weakRateNorm = normalizeScoreComponent(weakRateVec, params.userSetDynamicScoreNormalize).';
+    % Keep shortlist ranking coarse-delta-dominant; blend terms are small
+    % auxiliary priors to break close ties.
     blended = coarseDeltas + params.userSetCoarsePredictiveBlend(1) * strongScoreNorm ...
         - params.userSetCoarsePredictiveBlend(2) * weakRateNorm;
     [~, order] = sort(blended, 'descend');
@@ -1080,11 +1082,13 @@ function params = ensureUserSetParams(params)
     % - current branch switching is controlled only by userSetCurrentStateDominantRanking.
     % - userSetBaseScoreTieBreakOnly is kept for old configs but ignored.
     % - userSetBaseScoreWeight / userSetCurrentStateScoreWeight are no longer used.
+    % [channel, weakReplacementProxy, complementarity, penalty]
+    % Design intent: prefer replacement gain/complementarity over raw channel.
     params = setDefault(params, 'userSetCurrentStateScoreWeightsByLevel', ...
-        [0.18, 0.34, 0.34, 0.14; ...
-         0.16, 0.34, 0.36, 0.14; ...
-         0.14, 0.34, 0.38, 0.14; ...
-         0.12, 0.34, 0.40, 0.14]);
+        [0.14, 0.36, 0.36, 0.14; ...
+         0.12, 0.37, 0.37, 0.14; ...
+         0.10, 0.38, 0.38, 0.14; ...
+         0.08, 0.39, 0.39, 0.14]);
     params = setDefault(params, 'userSetExternalShortlistSize', 18);
     params = setDefault(params, 'userSetUseBasePrescreen', false);
     params = setDefault(params, 'userSetDynamicScoreNormalize', 'zscore');
@@ -1102,7 +1106,8 @@ function params = ensureUserSetParams(params)
     params = setDefault(params, 'userSetTwoSwapMaxCandidates', 4);
     params = setDefault(params, 'userSetDynamicRescoreTopK', 12);
     params = setDefault(params, 'userSetDiversificationJitterScale', 0.02);
-    params = setDefault(params, 'userSetCoarsePredictiveBlend', [0.20, 0.08]);
+    % Keep shortlist ranking close to raw coarse delta; blend terms are mild.
+    params = setDefault(params, 'userSetCoarsePredictiveBlend', [0.08, 0.03]);
 end
 
 function params = setDefault(params, name, value)
