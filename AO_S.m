@@ -211,28 +211,24 @@ function [state, info] = AO_S(state, params, t)
 
         if bestDelta >= params.epsilonS
             state = bestState;
-            info.acceptedSwaps = info.acceptedSwaps + 1;
-            userSetMemory = registerSwapOutcome(userSetMemory, bestPair, true, params);
-            swapTrace(swapIter).accepted = true;
-            swapTrace(swapIter).acceptedUsingRefine = evalSummary.bestCandidateUsedRefine;
-            swapTrace(swapIter).acceptedSwapUserOut = bestPair.weakUser;
-            swapTrace(swapIter).acceptedSwapUserIn = bestPair.strongUser;
-            swapTrace(swapIter).acceptedDelta = bestDelta;
-            swapTrace(swapIter).acceptedPairScoreDecomp = lookupCandidateScoreDecomp(scoreDebug, bestPair.strongUser);
-            swapTrace(swapIter).sumRateAfter = state.sumRate;
-            swapTrace(swapIter).breakReason = '';
-            info.breakReason = '';
-
             if params.userSetPostAcceptShortRefine
                 [state, postGain, postTriggered] = postAcceptShortRefine(state, params);
                 swapTrace(swapIter).postAcceptShortRefineTriggered = postTriggered;
                 swapTrace(swapIter).postAcceptGain = postGain;
             end
-
+            swapTrace(swapIter) = applyAcceptedSwapTrace( ...
+                swapTrace(swapIter), state, params, bestDelta, bestPair, scoreDebug, ...
+                evalSummary.bestCandidateUsedRefine, false, false);
+            info.breakReason = '';
+            info.acceptedSwaps = info.acceptedSwaps + 1;
+            userSetMemory = registerSwapOutcome(userSetMemory, bestPair, true, params);
             userSetMemory.lastBestDeltaFinal = bestDelta;
         else
             userSetMemory.lastBestDeltaFinal = bestDelta;
-            if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel
+            twoSwapTried = params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel;
+            twoSwapAccepted = false;
+            acceptedPair = bestPair;
+            if twoSwapTried
                 swapTrace(swapIter).limitedTwoSwapTried = true;
                 [state2, twoSwapInfo] = tryLimitedTwoSwapFromTopCandidates(state, params, userSetMemory, weakUserPositions, weakUsers, strongExternal, currentScore, topRefineLocal, evaluatedPairs, bestDelta);
                 swapTrace(swapIter).twoSwapEvaluated = twoSwapInfo.evaluated;
@@ -242,65 +238,32 @@ function [state, info] = AO_S(state, params, t)
                 swapTrace(swapIter).twoSwapReason = twoSwapInfo.reason;
                 info.twoSwap = twoSwapInfo;
                 if twoSwapInfo.accepted
+                    twoSwapAccepted = true;
                     state = state2;
-                    swapTrace(swapIter).accepted = true;
-                    swapTrace(swapIter).limitedTwoSwapAccepted = true;
-                    swapTrace(swapIter).acceptedByTwoSwap = true;
-                    swapTrace(swapIter).acceptedDelta = twoSwapInfo.bestTwoDelta;
-                    swapTrace(swapIter).bestDelta = twoSwapInfo.bestTwoDelta;
-                    swapTrace(swapIter).bestDeltaFinal = twoSwapInfo.bestTwoDelta;
-                    swapTrace(swapIter).bestDeltaMinusEpsilonS = twoSwapInfo.bestTwoDelta - params.epsilonS;
-                    swapTrace(swapIter).numCandidatesAboveEpsilonS = max(1, swapTrace(swapIter).numCandidatesAboveEpsilonS);
-                    if ~isempty(twoSwapInfo.bestSequence)
-                        swapTrace(swapIter).bestPair = struct('weakUser', twoSwapInfo.bestSequence(end, 1), ...
-                            'strongUser', twoSwapInfo.bestSequence(end, 2), 'position', []);
-                        swapTrace(swapIter).acceptedSwapUserOut = twoSwapInfo.bestSequence(end, 1);
-                        swapTrace(swapIter).acceptedSwapUserIn = twoSwapInfo.bestSequence(end, 2);
-                        swapTrace(swapIter).acceptedPairScoreDecomp = lookupCandidateScoreDecomp(scoreDebug, twoSwapInfo.bestSequence(end, 2));
-                    end
-                    swapTrace(swapIter).sumRateAfter = state.sumRate;
-                    swapTrace(swapIter).breakReason = '';
-                    info.acceptedSwaps = info.acceptedSwaps + 1;
                     if ~isempty(twoSwapInfo.bestSequence)
                         finalPair = twoSwapInfo.bestSequence(end, :);
-                        userSetMemory = registerSwapOutcome(userSetMemory, struct('weakUser', finalPair(1), 'strongUser', finalPair(2)), true, params);
-                    else
-                        userSetMemory = registerSwapOutcome(userSetMemory, bestPair, true, params);
+                        acceptedPair = struct('weakUser', finalPair(1), 'strongUser', finalPair(2), 'position', []);
                     end
+                    swapTrace(swapIter) = applyAcceptedSwapTrace( ...
+                        swapTrace(swapIter), state, params, twoSwapInfo.bestTwoDelta, acceptedPair, scoreDebug, ...
+                        false, true, true);
+                    info.breakReason = '';
+                    info.acceptedSwaps = info.acceptedSwaps + 1;
+                    userSetMemory = registerSwapOutcome(userSetMemory, acceptedPair, true, params);
+                    userSetMemory.lastBestDeltaFinal = twoSwapInfo.bestTwoDelta;
                     continue;
                 end
             end
-            userSetMemory = registerSwapOutcome(userSetMemory, bestPair, false, params);
-            userSetMemory.lastBestDeltaFinal = bestDelta;
-            if params.userSetEnableLimitedTwoSwap && stagnationLevel >= params.userSetTwoSwapMinLevel
-                swapTrace(swapIter).limitedTwoSwapTried = true;
-                [state2, twoSwapInfo] = tryLimitedTwoSwapFromTopCandidates(state, params, userSetMemory, weakUserPositions, weakUsers, strongExternal, currentScore, topRefineLocal, evaluatedPairs, bestDelta);
-                swapTrace(swapIter).twoSwapEvaluated = twoSwapInfo.evaluated;
-                swapTrace(swapIter).twoSwapBestOneDelta = twoSwapInfo.bestOneDelta;
-                swapTrace(swapIter).twoSwapBestDelta = twoSwapInfo.bestTwoDelta;
-                swapTrace(swapIter).twoSwapBestSequence = twoSwapInfo.bestSequence;
-                swapTrace(swapIter).twoSwapReason = twoSwapInfo.reason;
-                info.twoSwap = twoSwapInfo;
-                if twoSwapInfo.accepted
-                    state = state2;
-                    swapTrace(swapIter).accepted = true;
-                    swapTrace(swapIter).limitedTwoSwapAccepted = true;
-                    swapTrace(swapIter).sumRateAfter = state.sumRate;
-                    swapTrace(swapIter).breakReason = '';
-                    info.acceptedSwaps = info.acceptedSwaps + 1;
-                    if ~isempty(twoSwapInfo.bestSequence)
-                        finalPair = twoSwapInfo.bestSequence(end, :);
-                        userSetMemory = registerSwapOutcome(userSetMemory, struct('weakUser', finalPair(1), 'strongUser', finalPair(2)), true, params);
-                    end
-                    continue;
-                end
+            if ~twoSwapAccepted
+                userSetMemory = registerSwapOutcome(userSetMemory, bestPair, false, params);
+                userSetMemory.lastBestDeltaFinal = bestDelta;
+                swapTrace(swapIter).accepted = false;
+                swapTrace(swapIter).acceptedDelta = bestDelta;
+                swapTrace(swapIter).sumRateAfter = state.sumRate;
+                swapTrace(swapIter).breakReason = 'bestDeltaBelowThreshold';
+                info.breakReason = 'bestDeltaBelowThreshold';
+                break;
             end
-            swapTrace(swapIter).accepted = false;
-            swapTrace(swapIter).acceptedDelta = bestDelta;
-            swapTrace(swapIter).sumRateAfter = state.sumRate;
-            swapTrace(swapIter).breakReason = 'bestDeltaBelowThreshold';
-            info.breakReason = 'bestDeltaBelowThreshold';
-            break;
         end
 
         if swapIter == params.maxSwapPerUpdate
@@ -1098,6 +1061,28 @@ function [invalid, powerVal] = isInvalidCandidateW(W, pmax)
 end
 
 function params = ensureUserSetParams(params)
+    % Backward compatibility for legacy user-set parameter names.
+    % Rule: new names take precedence when both old/new are provided.
+    params = mapAliasIfMissing(params, 'userSetTwoSwapTriggerLevel', 'userSetTwoSwapMinLevel');
+    params = mapAliasIfMissing(params, 'userSetMaxIntensificationLevel', 'userSetIntensificationMaxLevel');
+    params = mapAliasIfMissing(params, 'userSetDiversificationJitter', 'userSetDiversificationJitterScale');
+
+    % Legacy dynamic-score weights (single vector) -> new multi-level weights.
+    % If new fields already exist, they are kept. Missing new fields are
+    % backfilled from the legacy vector to keep old configs effective.
+    if isfield(params, 'userSetDynamicScoreWeights') && ~isempty(params.userSetDynamicScoreWeights)
+        legacyW = params.userSetDynamicScoreWeights(:).';
+        if numel(legacyW) < 5
+            legacyW = [legacyW, zeros(1, 5 - numel(legacyW))];
+        elseif numel(legacyW) > 5
+            legacyW = legacyW(1:5);
+        end
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsBase', legacyW);
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsLevel1', legacyW);
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsLevel2', legacyW);
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsLevel3', legacyW);
+    end
+
     params = setDefault(params, 'userSetCurrentStateDominantRanking', true);
     params = setDefault(params, 'userSetBaseScoreWeight', 0.08);
     params = setDefault(params, 'userSetCurrentStateScoreWeight', 0.92);
@@ -1131,6 +1116,46 @@ function params = setDefault(params, name, value)
     if ~isfield(params, name) || isempty(params.(name))
         params.(name) = value;
     end
+end
+
+function params = mapAliasIfMissing(params, oldName, newName, mappedValue)
+    if nargin < 4
+        mappedValue = [];
+    end
+    hasOld = isfield(params, oldName) && ~isempty(params.(oldName));
+    hasNew = isfield(params, newName) && ~isempty(params.(newName));
+    if hasOld && ~hasNew
+        if isempty(mappedValue)
+            params.(newName) = params.(oldName);
+        else
+            params.(newName) = mappedValue;
+        end
+    end
+end
+
+function traceItem = applyAcceptedSwapTrace(traceItem, state, params, acceptedDelta, acceptedPair, scoreDebug, acceptedUsingRefine, acceptedByTwoSwap, limitedTwoSwapAccepted)
+% Keep accepted-case trace updates consistent across one-swap / two-swap.
+    traceItem.accepted = true;
+    traceItem.acceptedUsingRefine = logical(acceptedUsingRefine);
+    traceItem.acceptedByTwoSwap = logical(acceptedByTwoSwap);
+    traceItem.limitedTwoSwapAccepted = logical(limitedTwoSwapAccepted);
+    traceItem.acceptedDelta = acceptedDelta;
+    traceItem.bestDelta = acceptedDelta;
+    traceItem.bestDeltaFinal = acceptedDelta;
+    traceItem.bestDeltaMinusEpsilonS = acceptedDelta - params.epsilonS;
+    traceItem.numCandidatesAboveEpsilonS = max(1, traceItem.numCandidatesAboveEpsilonS);
+    traceItem.sumRateAfter = state.sumRate;
+    traceItem.breakReason = '';
+
+    if isempty(acceptedPair) || ~isfield(acceptedPair, 'weakUser')
+        acceptedPair = struct('weakUser', [], 'strongUser', [], 'position', []);
+    elseif ~isfield(acceptedPair, 'position')
+        acceptedPair.position = [];
+    end
+    traceItem.bestPair = acceptedPair;
+    traceItem.acceptedSwapUserOut = acceptedPair.weakUser;
+    traceItem.acceptedSwapUserIn = acceptedPair.strongUser;
+    traceItem.acceptedPairScoreDecomp = lookupCandidateScoreDecomp(scoreDebug, acceptedPair.strongUser);
 end
 
 function w = getDynamicWeightsByLevel(params, level)
