@@ -26,9 +26,9 @@ paramsOverride.userGeneration = struct();
 paramsOverride.userGeneration.mode = 'clustered';
 paramsOverride.randomSeed = 20260328;
 paramsOverride.symbolSeed = 20260429; % seed + 101
-paramsOverride.userGeneration.hotspotCenters = [2.2, 7.0; 5.0, 9.0; 7.8, 11.0];
+paramsOverride.userGeneration.hotspotCenters = [2.2, 2.5; 5.0, 6.0; 7.8, 9.0];
 paramsOverride.userGeneration.hotspotStd = [0.5, 0.7];
-paramsOverride.userRegionY = [6, 12];
+paramsOverride.userRegionY = [0, 12];
 
 % 给 AO 和 WMMSE 多一点迭代空间
 paramsOverride.IW = 60;
