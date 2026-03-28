@@ -13,14 +13,13 @@ paramsOverride.sigma2 = 1e-6;
 paramsOverride.alphaW = 0.03;
 paramsOverride.alphaL = 0.985;
 
-% 按 K 自动缩放（保持当前 demo 风格：每 8 用户 1 条波导，NRF/Kmax/KServ 与 N 对齐）
-paramsOverride.K = 128;
-paramsOverride.scaleWithK = true;
-paramsOverride.usersPerWaveguide = 8;
-paramsOverride.MPerWaveguide = 6;
-paramsOverride.scaleNRFWithN = true;
-paramsOverride.scaleKmaxWithN = true;
-paramsOverride.scaleKServAsMin = true;
+% 静态候选池快速调试配置（中等规模）：NRF = N, KServ = NRF = N
+paramsOverride.N = 8;
+paramsOverride.M = 6;
+paramsOverride.K = 64;
+paramsOverride.NRF = 8;
+paramsOverride.Kmax = 8;
+paramsOverride.KServ = 8;
 
 % 保持 clustered 用户分布
 paramsOverride.userGeneration = struct();
