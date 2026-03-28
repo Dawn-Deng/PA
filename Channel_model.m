@@ -75,14 +75,6 @@ function params = defaultParameters()
     params.Kmax = 8;
     params.KServ = 8;
 
-    % 工程化增强：按 K 自动缩放系统规模（默认开启）
-    params.scaleWithK = true;
-    params.usersPerWaveguide = 8;      % K=64 -> N=8 的基准比例
-    params.MPerWaveguide = 6;          % 每条波导上的 PA 基准值
-    params.scaleNRFWithN = true;       % NRF = N
-    params.scaleKmaxWithN = true;      % Kmax = N
-    params.scaleKServAsMin = true;     % KServ = min(NRF, Kmax)
-
     params.Dx = 10;
     params.Dy = 10;
     params.d = 4;
