@@ -17,9 +17,9 @@ paramsOverride.alphaL = 0.985;
 paramsOverride.N = 8;
 paramsOverride.M = 6;
 paramsOverride.K = 64;
-paramsOverride.NRF = paramsOverride.N;
-paramsOverride.Kmax = paramsOverride.N;
-paramsOverride.KServ = paramsOverride.N;
+paramsOverride.NRF = 8;
+paramsOverride.Kmax = 8;
+paramsOverride.KServ = 8;
 
 % 保持 clustered 用户分布
 paramsOverride.userGeneration = struct();
