@@ -1098,6 +1098,28 @@ function [invalid, powerVal] = isInvalidCandidateW(W, pmax)
 end
 
 function params = ensureUserSetParams(params)
+    % Backward compatibility for legacy user-set parameter names.
+    % Rule: new names take precedence when both old/new are provided.
+    params = mapAliasIfMissing(params, 'userSetTwoSwapTriggerLevel', 'userSetTwoSwapMinLevel');
+    params = mapAliasIfMissing(params, 'userSetMaxIntensificationLevel', 'userSetIntensificationMaxLevel');
+    params = mapAliasIfMissing(params, 'userSetDiversificationJitter', 'userSetDiversificationJitterScale');
+
+    % Legacy dynamic-score weights (single vector) -> new multi-level weights.
+    % If new fields already exist, they are kept. Missing new fields are
+    % backfilled from the legacy vector to keep old configs effective.
+    if isfield(params, 'userSetDynamicScoreWeights') && ~isempty(params.userSetDynamicScoreWeights)
+        legacyW = params.userSetDynamicScoreWeights(:).';
+        if numel(legacyW) < 5
+            legacyW = [legacyW, zeros(1, 5 - numel(legacyW))];
+        elseif numel(legacyW) > 5
+            legacyW = legacyW(1:5);
+        end
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsBase', legacyW);
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsLevel1', legacyW);
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsLevel2', legacyW);
+        params = mapAliasIfMissing(params, 'userSetDynamicScoreWeights', 'userSetDynamicScoreWeightsLevel3', legacyW);
+    end
+
     params = setDefault(params, 'userSetCurrentStateDominantRanking', true);
     params = setDefault(params, 'userSetBaseScoreWeight', 0.08);
     params = setDefault(params, 'userSetCurrentStateScoreWeight', 0.92);
@@ -1130,6 +1152,21 @@ end
 function params = setDefault(params, name, value)
     if ~isfield(params, name) || isempty(params.(name))
         params.(name) = value;
+    end
+end
+
+function params = mapAliasIfMissing(params, oldName, newName, mappedValue)
+    if nargin < 4
+        mappedValue = [];
+    end
+    hasOld = isfield(params, oldName) && ~isempty(params.(oldName));
+    hasNew = isfield(params, newName) && ~isempty(params.(newName));
+    if hasOld && ~hasNew
+        if isempty(mappedValue)
+            params.(newName) = params.(oldName);
+        else
+            params.(newName) = mappedValue;
+        end
     end
 end
 
