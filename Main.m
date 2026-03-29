@@ -26,7 +26,7 @@ paramsOverride.userGeneration = struct();
 paramsOverride.userGeneration.mode = 'clustered';
 paramsOverride.randomSeed = 20260328;
 paramsOverride.symbolSeed = 20260429; % seed + 101
-paramsOverride.userGeneration.hotspotCenters = [2.2, 2.8; 5.0, 6.8; 7.8, 10.0];
+paramsOverride.userGeneration.hotspotCenters = [2.2, 2.5; 5.0, 6.8; 7.8, 9.0];
 paramsOverride.userGeneration.hotspotStd = [0.5, 0.7];
 paramsOverride.userRegionY = [0, 12];
 
